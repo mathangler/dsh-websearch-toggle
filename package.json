@@ -1,0 +1,44 @@
+{
+  "name": "dsh-websearch-toggle",
+  "version": "0.1.0",
+  "description": "A live enable/disable switch for the Web search plugin card in DeepSeek Harness: the switch is injected into the card's expanded configuration, greys the card out when off, and withholds the web_search tool from every agent.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./host-core": "./lib/host-core.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/host-core.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "web-search",
+    "web_search",
+    "toggle"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

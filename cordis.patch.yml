@@ -1,0 +1,20 @@
+# dsh-websearch-toggle — profile bundle patch.
+#
+# `dsh plugin --profile web add <this package>` runs pnpm in the profile
+# directory and then appends every dependency that declares `dsh.bundle` to
+# `dsh.profile.bundles`. This patch therefore lands after the shipped bundles
+# and before the user's own cordis.patch.yml, so a row below can still be
+# overridden or disabled by id.
+#
+# One row: the host half. The browser half needs no row here — the web server
+# loads it from `exports["./client"]` because package.json declares
+# `dsh.client.platform: "web"`.
+#
+# This row composes no settings namespace and edits no other row: turning the
+# switch off is an in-process effect (the tool and its prompt section are
+# withheld from every step), not a profile edit. `web-search-deepseek` stays
+# exactly where the bundle put it.
+
+- insert:
+    - id: websearch-toggle
+      name: dsh-websearch-toggle

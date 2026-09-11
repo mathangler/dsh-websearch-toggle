@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.DS_Store
+
+# Runtime artefacts of the local verification scripts. They hold a live login
+# cookie and this machine's session token, so they must never be committed.
+test/e2e/
+test/verify-server/
