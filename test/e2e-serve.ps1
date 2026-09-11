@@ -9,7 +9,11 @@
 # It never touches the running GUI on 3080. The one real write it performs — a
 # switch flip — is restored before it exits.
 #
-# Usage:  pwsh -File test/e2e-serve.ps1
+# Usage:  pwsh -File test/e2e-serve.ps1 [-Port 3099]
+
+param(
+  [int]$Port = 3099
+)
 
 $ErrorActionPreference = 'Continue'
 $root = $PSScriptRoot
@@ -22,7 +26,7 @@ $err  = Join-Path $work 'boot-err.txt'
 $jar  = Join-Path $work 'cookies.txt'
 $bat  = Join-Path $work 'boot.bat'
 $dl   = Join-Path $work 'bundle-dl.js'
-$port = 3099
+$port = $Port
 Remove-Item $jar, $out, $err, $dl -Force -ErrorAction SilentlyContinue
 '=== dsh-websearch-toggle e2e ===' | Set-Content $log
 
