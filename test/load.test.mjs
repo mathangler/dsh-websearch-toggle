@@ -166,54 +166,51 @@ function loadClient(options = {}) {
 
   let enabled = options.enabled === undefined ? true : options.enabled;
   let revision = 5;
-  // A cold mirror answers empty for its first read, then warms up — which is what
-  // the real settings describe does while its Remote is still in flight.
+  // A cold mirror reports `loading` for its first read, then `ready` — which is
+  // what the real describe mirror does while its Remote is still in flight.
   let coldLeft = options.coldFirstRead === true ? 1 : 0;
-  const warmView = () => ({ namespaces: [{ ns: 'web-search-toggle', value: { enabled }, revision, writable: options.writable }] });
-  let view = warmView();
   const notify = [];
 
+  /**
+   * The bound settings scope, modelled on the real one: it owns the revision,
+   * writes through `set(field, value)`, and re-reads after its own write.
+   */
   const scope = {
-    describe: () => ({
-      getSnapshot: () => {
-        if (coldLeft > 0) {
-          coldLeft -= 1;
-          return { view: { namespaces: [] } };
-        }
-        return { view };
-      },
-      subscribe(fn) {
-        notify.push(fn);
-        return () => {
-          const at = notify.indexOf(fn);
-          if (at >= 0) notify.splice(at, 1);
-        };
-      },
-    }),
+    getSnapshot() {
+      if (coldLeft > 0) {
+        coldLeft -= 1;
+        return { status: 'loading', value: undefined, revision: undefined, writable: false };
+      }
+      return { status: 'ready', value: { enabled }, revision, writable: options.writable !== false };
+    },
+    subscribe(fn) {
+      notify.push(fn);
+      return () => {
+        const at = notify.indexOf(fn);
+        if (at >= 0) notify.splice(at, 1);
+      };
+    },
+    set(field, value) {
+      writes.push({ field, value, revision });
+      // A fence race: refuse the first attempt the way a concurrent commit would.
+      if (refusesLeft > 0) {
+        refusesLeft -= 1;
+        revision += 1;
+        return Promise.reject(new Error('revision conflict'));
+      }
+      if (options.updateFails === true) return Promise.reject(new Error('conflict'));
+      enabled = value;
+      revision += 1;
+      return Promise.resolve();
+    },
+  };
+
+  const settingsScope = {
+    bind: () => scope,
+    describe: () => ({ getSnapshot: () => ({ view: { namespaces: [] } }), subscribe: () => () => {} }),
   };
 
   let refusesLeft = options.refuseOnce === true ? 1 : 0;
-
-  const remote = {
-    settings: {
-      update(ns, patch, expected) {
-        writes.push({ ns, patch, revision: expected });
-        // A fence race: refuse the first attempt, and advance the revision the
-        // way a concurrent commit would.
-        if (refusesLeft > 0) {
-          refusesLeft -= 1;
-          revision += 1;
-          view = warmView();
-          return Promise.reject(new Error('revision conflict'));
-        }
-        if (options.updateFails === true) return Promise.reject(new Error('conflict'));
-        enabled = patch.enabled;
-        revision += 1;
-        view = warmView();
-        return Promise.resolve();
-      },
-    },
-  };
 
   const ctx = {
     effect(fn, label) {
@@ -221,8 +218,8 @@ function loadClient(options = {}) {
       effects.push({ label, dispose });
       return dispose;
     },
-    get: (service) => (service === 'settingsScope' ? scope : undefined),
-    remote,
+    get: (service) => (service === 'settingsScope' ? settingsScope : undefined),
+    remote: { settings: { update: () => Promise.reject(new Error('this bundle must not call the Remote directly')) } },
     locale: {
       getSnapshot: () => ({ active: options.locale === undefined ? 'zh' : options.locale, locales: [{ id: 'en' }, { id: 'zh' }] }),
       register: (ns, id, dict) => { localeRegisters.push({ ns, id, dict }); return () => {}; },
@@ -283,6 +280,8 @@ function loadClient(options = {}) {
     notifyStore: () => {
       for (const fn of [...notify]) fn();
     },
+    /** The value the store actually holds — what a reload would read. */
+    stored: () => enabled,
     cardEffect: () => effects.find((entry) => entry.label.includes('web search switch')),
     styleEffect: () => effects.find((entry) => entry.label.includes('stylesheet')),
   };
@@ -430,7 +429,7 @@ test('an OFF position paints the switch off', async () => {
   assert.ok(String(toggle.title).includes('关闭'), 'the title must explain what off means');
 });
 
-test('clicking writes the namespace with the revision it read', async () => {
+test('clicking writes through the BOUND SCOPE, never the Remote directly', async () => {
   const loaded = loadClient();
   await loaded.settle();
   const card = loaded.makeCard('web-search');
@@ -442,9 +441,8 @@ test('clicking writes the namespace with the revision it read', async () => {
   await loaded.settle();
 
   assert.equal(loaded.writes.length, before + 1);
-  assert.equal(loaded.writes[before].ns, 'web-search-toggle');
-  assert.equal(loaded.writes[before].patch.enabled, false);
-  assert.equal(loaded.writes[before].revision, 5, 'the write must carry the revision it read');
+  assert.deepEqual(loaded.writes[before].field, 'enabled');
+  assert.equal(loaded.writes[before].value, false);
   assert.equal(toggle.getAttribute('aria-checked'), 'false');
   assert.equal(toggle.disabled, false);
 });
@@ -467,9 +465,9 @@ test('the switch is never disabled while a write is in flight', async () => {
 });
 
 test('turning the switch back ON works after turning it OFF', async () => {
-  // Regression: the second write reused the revision cached before the first
+  // Regression: the second write reused a revision cached before the first
   // commit, the document's fence refused it, and the optimistic paint reverted —
-  // so OFF could never be undone. The flip now re-reads before writing.
+  // so OFF could never be undone. The bound scope owns the revision now.
   const loaded = loadClient();
   await loaded.settle();
   const card = loaded.makeCard('web-search');
@@ -485,29 +483,28 @@ test('turning the switch back ON works after turning it OFF', async () => {
   assert.equal(toggle.getAttribute('aria-checked'), 'true', 'second click must turn it back on');
   assert.equal(toggle.disabled, false);
 
-  const last = loaded.writes[loaded.writes.length - 1];
-  assert.equal(last.patch.enabled, true);
-  assert.equal(last.revision, 6, 'the retry must use the revision the first commit produced');
+  assert.deepEqual(loaded.writes.map((entry) => entry.value), [false, true]);
 });
 
-test('a stale-revision refusal is retried once against a fresh revision', async () => {
-  // The fence can move between the optimistic paint and the write's arrival.
-  const loaded = loadClient({ refuseOnce: true });
+test('the position survives a page reload, because the write landed', async () => {
+  // The reported symptom: turn it off, refresh, and it is on again — the write
+  // never reached the host. The scope's `set` is the write, so a stubbed store
+  // that keeps the value proves the bundle actually committed it.
+  const loaded = loadClient();
   await loaded.settle();
   const card = loaded.makeCard('web-search');
   loaded.fire([card]);
-  const toggle = endOf(card).dshwstSwitch;
-
-  toggle.click();
+  endOf(card).dshwstSwitch.click();
   await loaded.settle();
-  assert.equal(loaded.writes.length, 2, 'the refusal must be retried exactly once');
-  assert.equal(loaded.writes[0].revision, 5);
-  assert.equal(loaded.writes[1].revision, 6, 'the retry must carry the new revision');
-  assert.equal(toggle.getAttribute('aria-checked'), 'false', 'and then land');
+  assert.equal(loaded.stored(), false, 'the committed value must be OFF, not just painted');
+
+  endOf(card).dshwstSwitch.click();
+  await loaded.settle();
+  assert.equal(loaded.stored(), true, 'and back ON');
 });
 
-test('a refusal that is not a fence race still reverts', async () => {
-  const loaded = loadClient({ updateFails: true, refuseOnce: true });
+test('a refused write reverts and leaves the switch usable', async () => {
+  const loaded = loadClient({ updateFails: true });
   await loaded.settle();
   const card = loaded.makeCard('web-search');
   loaded.fire([card]);
@@ -516,6 +513,7 @@ test('a refusal that is not a fence race still reverts', async () => {
   toggle.click();
   await loaded.settle();
   assert.equal(toggle.getAttribute('aria-checked'), 'true', 'the host is the authority');
+  assert.equal(toggle.disabled, false, 'and the switch stays usable');
 });
 
 test('a cold settings mirror is retried when the card mounts', async () => {
@@ -528,20 +526,6 @@ test('a cold settings mirror is retried when the card mounts', async () => {
   await loaded.settle();
   const toggle = endOf(card).dshwstSwitch;
   assert.equal(toggle.disabled, false, 'the mount must retry the read, not stay dead');
-});
-
-test('a refused write puts the switch back', async () => {
-  const loaded = loadClient({ updateFails: true });
-  await loaded.settle();
-  const card = loaded.makeCard('web-search');
-  loaded.fire([card]);
-  const toggle = endOf(card).dshwstSwitch;
-
-  toggle.click();
-  await loaded.settle();
-  assert.equal(loaded.writes.length, 2, 'the refusal is retried once, then given up on');
-  assert.equal(toggle.getAttribute('aria-checked'), 'true', 'the host is the authority');
-  assert.equal(toggle.disabled, false, 'and the switch stays usable');
 });
 
 test('an external commit repaints the switch', async () => {
