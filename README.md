@@ -11,10 +11,11 @@ English | [中文](README.zh.md)
 
 ## What the switch does
 
-Open the sidebar **Plugins** page. The switch is its own entry, **Web search
-switch**, sitting next to the official **Web search** entry. The official entry
-keeps its API key, endpoint and max-uses fields exactly as shipped — this plugin
-adds a switch and changes nothing official.
+Open the sidebar **Plugins** page. A switch appears at the trailing end of the
+official **Web search** card's title row — the same position and style as the
+switch every card in the **Installed** group already carries. The official card,
+its page and its fields are not modified in any way: this plugin appends one
+switch to that card after render, and removes it when the plugin unloads.
 
 **Off**
 
@@ -94,16 +95,32 @@ value the registry treats as authoritative, so removing the tool and
 `tool:web_search` from it is exactly what `tool-web` would have declined to
 register had its `search` flag been false — but live, and reversible per step.
 
-The browser half is a plain slot registration into `plugins.item` under its
-**own** id, `web-search-toggle`, ordered `41` — directly after the official Web
-search entry (`40`) so the two read as one group. Nothing official is touched.
+The browser half registers **no slot at all**. Instead it appends one switch to
+the official card after render. The reason is that the Plugins page offers only
+three seats (`plugins.item`, `plugins.bundle.config`, `plugins.row.config`), and
+all three ADD a card or a page — none can put a control INSIDE an existing entry.
+Worse, `plugins.item`'s own catalog says: *"a fresh id is added beside the shipped
+entries, while reusing a shipped id puts you in THAT cell and replaces it."*
+Reusing `web-search` therefore does not decorate the official card, it evicts it —
+an earlier build of this package did exactly that and deleted the official Web
+search form. So the official card is left alone and the switch is appended to it,
+then removed on unload.
 
-The id matters more than it looks. The slot catalog states the rule: *"a fresh
-id is added beside the shipped entries, while reusing a shipped id puts you in
-THAT cell and replaces it."* An earlier build of this plugin registered under
-the shipped `web-search` id expecting to *add* a control to that page; it
-actually evicted the official page. Registering a fresh id is what "added
-beside, unchanged" requires.
+The card is found by `li[data-plugin-item="web-search"]`, a stable `data-`
+attribute the page sets itself — never a hashed CSS-module class name.
+
+### The schema must be a real one
+
+The settings schema **must** be a genuine schemastery object, and this is not a
+style preference. `settings.describe()` calls `schema.toJSON()` on every
+registered schema and hands the result to the browser, and that ONE call decides
+whether each official plugin page exists at all (each registers only for a
+namespace it sees in that list). A hand-rolled validator without `toJSON()`
+therefore does far worse than misdescribe this plugin: it throws inside
+`describe()` and **removes the Shell, Agent loop, Subagent and Web search pages
+from the Plugins page entirely**. An earlier 0.2.x build of this package did
+exactly that. The schema is now imported from the platform's own published
+package, so the wire format is the real one rather than a copy of it.
 
 The settings schema is declared inline rather than with
 `@deepseek-ai/schemastery`: this package installs into
@@ -112,12 +129,16 @@ The settings schema is declared inline rather than with
 four-line validator over the single field this plugin owns keeps the package
 dependency-free and installable wherever DSH puts it.
 
+The settings schema aside, the host half needs no dependency of its own; the only
+one it declares is `@deepseek-ai/schemastery`, because a real schema is not
+optional (see above).
+
 ## Tests
 
 ```bash
 node test/host-core.test.mjs   # 14 — the toggle's state machine and projections
-node test/wiring.test.mjs      #  9 — namespace install, assembly waterfall, guard
-node test/load.test.mjs        # 12 — the browser half against a fake DOM and React
+node test/wiring.test.mjs      # 10 — namespace install, assembly waterfall, guard
+node test/load.test.mjs        # 15 — the browser half against a fake DOM
 ```
 
 Each file runs directly rather than through `node --test`, which spawns per-file
@@ -131,8 +152,9 @@ reason.
 
 ## Caveats
 
-- **A fresh entry id, not the shipped one.** See "Why it is built this way"; the
-  switch lives beside the official Web search page, never in its cell.
+- **DOM append, not a slot.** The switch is found by the official card's own
+  `data-plugin-item` attribute and appended to the card head. A future release
+  that renames that attribute needs the matcher updated.
 - **Client-only presence.** If the browser half fails to load, the switch
   disappears from the page but the Host effect stays exactly as stored.
 - The switch governs this deployment's process. A second server started from the

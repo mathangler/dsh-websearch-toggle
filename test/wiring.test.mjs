@@ -13,7 +13,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { apply, inject, name, SETTINGS_NAMESPACE, sectionSchema } from '../lib/index.js';
+import { apply, inject, name, SETTINGS_NAMESPACE, SettingsSchema } from '../lib/index.js';
 import { WEB_SEARCH_SECTION } from '../lib/host-core.js';
 
 /**
@@ -124,12 +124,28 @@ test('the switch is a registered settings section with the shipped default ON', 
   assert.equal(typeof registration.hooks.onChange, 'function');
 });
 
-test('the inline schema mirrors what a schemastery object would express', () => {
-  assert.deepEqual(sectionSchema({ enabled: false }), { enabled: false });
-  assert.deepEqual(sectionSchema({}), { enabled: true }, 'a missing field is the default, not an error');
-  assert.deepEqual(sectionSchema(undefined), { enabled: true });
-  assert.deepEqual(sectionSchema({ enabled: true, stray: 'dropped' }), { enabled: true });
-  assert.throws(() => sectionSchema({ enabled: 'off' }), /must be a boolean/u);
+test('the schema is a REAL schemastery schema, because describe() serializes it', () => {
+  // The regression this guards: `settings.describe()` calls `schema.toJSON()` and
+  // hands the result to the browser, and that ONE call gates every official
+  // plugin page — each registers only for a namespace it sees in that list. A
+  // hand-rolled validator without toJSON threw inside describe(), which removed
+  // the Shell, Agent loop, Subagent AND Web search pages from the Plugins page.
+  assert.equal(typeof SettingsSchema.toJSON, 'function', 'describe() requires toJSON or it throws');
+  const wire = SettingsSchema.toJSON();
+  assert.equal(typeof wire, 'object');
+  assert.ok(wire !== null, 'toJSON must produce an object');
+  // The real shape is an interned { uid, refs } graph; the object schema is
+  // always a refs entry whose `dict` maps the field name to its ref id.
+  const objectNode = Object.values(wire.refs).find((node) => node !== null && typeof node === 'object' && node.dict !== undefined);
+  assert.ok(objectNode !== undefined, 'the wire form must describe an object with fields');
+  assert.equal(typeof objectNode.dict.enabled, 'number', '`enabled` must be a declared field');
+});
+
+test('the schema resolves an absent section to the shipped default ON', () => {
+  assert.deepEqual(SettingsSchema({}), { enabled: true }, 'an absent field is the default, not an error');
+  assert.deepEqual(SettingsSchema({ enabled: false }), { enabled: false });
+  assert.deepEqual(SettingsSchema({ enabled: true }), { enabled: true });
+  assert.throws(() => SettingsSchema({ enabled: 'off' }), 'a bad value must be a loud rejection');
 });
 
 test('a committed OFF is in force before the first assembly', async () => {

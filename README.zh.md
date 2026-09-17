@@ -2,9 +2,10 @@
 
 给 DeepSeek Harness 的「**网页搜索**」插件页面加一个真正生效的开关。
 
-打开侧栏的**插件**页面。开关是独立的一个条目「**网页搜索开关**」，就在官方
-「**网页搜索**」条目旁边。官方条目原封保留它自己的 API Key、接口地址、次数上限
-字段 —— 本插件只增加一个开关，不改动官方任何内容。
+打开侧栏的**插件**页面。官方「**网页搜索**」卡片标题那一行的末尾会多出一个开关，
+位置与样式和「已安装」分组里每张组合包卡片尾部的开关完全一致。官方卡片、官方
+页面、官方字段一个字节都没有改动 —— 本插件只是在渲染之后往那张卡片上追加一个
+开关，插件停用时再把它摘掉。
 
 [English](README.md) | 中文
 
@@ -78,15 +79,27 @@ restriction would mask every agent"）。可用的接缝因此是组装 waterfal
 `system-prompt/assemble` 的返回值被注册表视为权威，于是把工具和 `tool:web_search`
 从中移除，效果等同于 `tool-web` 的 `search: false` —— 但它是实时的、按步可逆的。
 
-浏览器半边就是一次普通的 slot 注册，注册进 `plugins.item`，使用**自己的** id
-`web-search-toggle`，order 为 `41` —— 紧跟在官方「网页搜索」条目（40）之后，两者
-读起来像一组。官方内容一个都不改。
+浏览器半边**不注册任何 slot**，而是在渲染后往官方卡片上追加一个开关。原因是
+Plugins 页面只提供三个座位（`plugins.item`、`plugins.bundle.config`、
+`plugins.row.config`），三者都只能**新增**一张卡片或一个页面，没有任何一个能往
+已有条目**内部**放控件。更糟的是 `plugins.item` 自己的目录写着：*"a fresh id is
+added beside the shipped entries, while reusing a shipped id puts you in THAT
+cell and replaces it."* —— 复用 `web-search` 不是装饰官方卡片，而是**顶掉**它：
+本插件早先一个版本就是这么干的，结果把官方网页搜索表单整个删掉了。所以现在的
+做法是完全不动官方卡片，渲染后把开关追加进去，插件停用时摘掉。
 
-这个 id 比看上去重要。slot 目录把规则写得很明白：*"a fresh id is added beside the
-shipped entries, while reusing a shipped id puts you in THAT cell and replaces
-it."*（用新 id 会加在官方条目旁边；复用官方 id 会占用那个格子并**替换**它。）
-本插件早先一个版本复用了官方 id `web-search`，以为是在那个页面上**增加**一个控件，
-实际上是**顶掉了**官方页面。要满足「在旁边增加、官方不变」，就必须用新 id。
+卡片靠 `li[data-plugin-item="web-search"]` 定位 —— 这是页面自己设置的稳定
+`data-` 属性，不是会被哈希的 CSS Module 类名。
+
+### schema 绝不能手写
+
+设置 schema **必须**是真正的 schemastery 对象，这是硬性的：`settings.describe()`
+会对每个已注册的 schema 调 `schema.toJSON()` 并把结果发给浏览器，而这**一次调用
+就决定了每个官方插件页是否存在**（官方页面只为它在那份列表里看到的命名空间注册）。
+所以一个没有 `toJSON()` 的手写校验器不只是描述错了本插件 —— 它会在 `describe()`
+里抛异常，把 Shell、Agent 循环、Subagent、网页搜索四个页面从插件页上**全部抹掉**。
+本插件早先的 0.2.x 就是这样。现在 schema 从平台自己发布的包里导入，线上格式因此
+是真的而不是仿的。
 
 设置 schema 以内联校验器声明，而不用 `@deepseek-ai/schemastery`：本包安装进
 `<profile>/node_modules`，模块解析发生在它自己的目录里，而
@@ -111,8 +124,8 @@ node test/load.test.mjs        # 12 —— 浏览器半边（假 DOM + 假 React
 
 ## 已知边界
 
-- **用新 id，不占用官方 id。** 见「为什么这么实现」；开关永远在官方「网页搜索」
-  页面**旁边**，不进入它的格子。
+- **DOM 追加，不是 slot。** 开关靠官方卡片自己的 `data-plugin-item` 属性定位并
+  追加在卡片头部末尾。将来某个版本若改掉那个属性，匹配器需要跟着改。
 - **客户端只是表现层。** 浏览器半边加载失败时开关从页面上消失，但宿主效果仍按
   持久化的值生效。
 - 开关作用于当前这个服务进程。用同一个 home 起的第二个服务会读同一个
