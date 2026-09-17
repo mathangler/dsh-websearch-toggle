@@ -166,12 +166,22 @@ function loadClient(options = {}) {
 
   let enabled = options.enabled === undefined ? true : options.enabled;
   let revision = 5;
-  let view = { namespaces: [{ ns: 'web-search-toggle', value: { enabled }, revision, writable: options.writable }] };
+  // A cold mirror answers empty for its first read, then warms up — which is what
+  // the real settings describe does while its Remote is still in flight.
+  let coldLeft = options.coldFirstRead === true ? 1 : 0;
+  const warmView = () => ({ namespaces: [{ ns: 'web-search-toggle', value: { enabled }, revision, writable: options.writable }] });
+  let view = warmView();
   const notify = [];
 
   const scope = {
     describe: () => ({
-      getSnapshot: () => ({ view }),
+      getSnapshot: () => {
+        if (coldLeft > 0) {
+          coldLeft -= 1;
+          return { view: { namespaces: [] } };
+        }
+        return { view };
+      },
       subscribe(fn) {
         notify.push(fn);
         return () => {
@@ -182,14 +192,24 @@ function loadClient(options = {}) {
     }),
   };
 
+  let refusesLeft = options.refuseOnce === true ? 1 : 0;
+
   const remote = {
     settings: {
       update(ns, patch, expected) {
         writes.push({ ns, patch, revision: expected });
+        // A fence race: refuse the first attempt, and advance the revision the
+        // way a concurrent commit would.
+        if (refusesLeft > 0) {
+          refusesLeft -= 1;
+          revision += 1;
+          view = warmView();
+          return Promise.reject(new Error('revision conflict'));
+        }
         if (options.updateFails === true) return Promise.reject(new Error('conflict'));
         enabled = patch.enabled;
         revision += 1;
-        view = { namespaces: [{ ns, value: { enabled }, revision, writable: options.writable }] };
+        view = warmView();
         return Promise.resolve();
       },
     },
@@ -417,13 +437,97 @@ test('clicking writes the namespace with the revision it read', async () => {
   loaded.fire([card]);
   const toggle = endOf(card).dshwstSwitch;
 
+  const before = loaded.writes.length;
   toggle.click();
-  assert.equal(toggle.disabled, true, 'the control is disabled while the write is in flight');
   await loaded.settle();
 
-  assert.deepEqual(loaded.writes, [{ ns: 'web-search-toggle', patch: { enabled: false }, revision: 5 }]);
+  assert.equal(loaded.writes.length, before + 1);
+  assert.equal(loaded.writes[before].ns, 'web-search-toggle');
+  assert.equal(loaded.writes[before].patch.enabled, false);
+  assert.equal(loaded.writes[before].revision, 5, 'the write must carry the revision it read');
   assert.equal(toggle.getAttribute('aria-checked'), 'false');
   assert.equal(toggle.disabled, false);
+});
+
+test('the switch is never disabled while a write is in flight', async () => {
+  // Regression: the in-flight state used to set `disabled`, so a write that never
+  // settled left a switch that could not be used again — "it turned off and will
+  // not turn back on". Re-entrancy is the guard's job, not the DOM attribute's.
+  const loaded = loadClient();
+  await loaded.settle();
+  const card = loaded.makeCard('web-search');
+  loaded.fire([card]);
+  const toggle = endOf(card).dshwstSwitch;
+
+  toggle.click();
+  assert.equal(toggle.disabled, false, 'a busy switch must stay clickable');
+  assert.equal(toggle.hasAttribute('data-dshwst-busy'), true, 'the busy look is cosmetic');
+  await loaded.settle();
+  assert.equal(toggle.hasAttribute('data-dshwst-busy'), false);
+});
+
+test('turning the switch back ON works after turning it OFF', async () => {
+  // Regression: the second write reused the revision cached before the first
+  // commit, the document's fence refused it, and the optimistic paint reverted —
+  // so OFF could never be undone. The flip now re-reads before writing.
+  const loaded = loadClient();
+  await loaded.settle();
+  const card = loaded.makeCard('web-search');
+  loaded.fire([card]);
+  const toggle = endOf(card).dshwstSwitch;
+
+  toggle.click();
+  await loaded.settle();
+  assert.equal(toggle.getAttribute('aria-checked'), 'false', 'first click turns it off');
+
+  toggle.click();
+  await loaded.settle();
+  assert.equal(toggle.getAttribute('aria-checked'), 'true', 'second click must turn it back on');
+  assert.equal(toggle.disabled, false);
+
+  const last = loaded.writes[loaded.writes.length - 1];
+  assert.equal(last.patch.enabled, true);
+  assert.equal(last.revision, 6, 'the retry must use the revision the first commit produced');
+});
+
+test('a stale-revision refusal is retried once against a fresh revision', async () => {
+  // The fence can move between the optimistic paint and the write's arrival.
+  const loaded = loadClient({ refuseOnce: true });
+  await loaded.settle();
+  const card = loaded.makeCard('web-search');
+  loaded.fire([card]);
+  const toggle = endOf(card).dshwstSwitch;
+
+  toggle.click();
+  await loaded.settle();
+  assert.equal(loaded.writes.length, 2, 'the refusal must be retried exactly once');
+  assert.equal(loaded.writes[0].revision, 5);
+  assert.equal(loaded.writes[1].revision, 6, 'the retry must carry the new revision');
+  assert.equal(toggle.getAttribute('aria-checked'), 'false', 'and then land');
+});
+
+test('a refusal that is not a fence race still reverts', async () => {
+  const loaded = loadClient({ updateFails: true, refuseOnce: true });
+  await loaded.settle();
+  const card = loaded.makeCard('web-search');
+  loaded.fire([card]);
+  const toggle = endOf(card).dshwstSwitch;
+
+  toggle.click();
+  await loaded.settle();
+  assert.equal(toggle.getAttribute('aria-checked'), 'true', 'the host is the authority');
+});
+
+test('a cold settings mirror is retried when the card mounts', async () => {
+  // Regression: a failed boot read used to leave the switch painted disabled
+  // forever. Mounting asks again.
+  const loaded = loadClient({ coldFirstRead: true });
+  await loaded.settle();
+  const card = loaded.makeCard('web-search');
+  loaded.fire([card]);
+  await loaded.settle();
+  const toggle = endOf(card).dshwstSwitch;
+  assert.equal(toggle.disabled, false, 'the mount must retry the read, not stay dead');
 });
 
 test('a refused write puts the switch back', async () => {
@@ -435,8 +539,9 @@ test('a refused write puts the switch back', async () => {
 
   toggle.click();
   await loaded.settle();
-  assert.equal(loaded.writes.length, 1, 'the attempt must reach the Remote');
+  assert.equal(loaded.writes.length, 2, 'the refusal is retried once, then given up on');
   assert.equal(toggle.getAttribute('aria-checked'), 'true', 'the host is the authority');
+  assert.equal(toggle.disabled, false, 'and the switch stays usable');
 });
 
 test('an external commit repaints the switch', async () => {
