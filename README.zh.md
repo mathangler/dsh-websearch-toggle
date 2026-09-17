@@ -54,6 +54,11 @@ dsh plugin --profile web add link:<本目录的绝对路径>
 `link:` 是符号链接，改完源码下次启动即生效。已安装的 `github:` 插件要更新，同样
 需要 `remove` + `add` —— spec 没变时 pnpm 会跳过解析。
 
+**每次 `remove` + `add` 之后都要检查 bundle 列表。** `dsh plugin remove` 会把包从
+profile `package.json` 的 `dsh.profile.bundles` 里删掉，而随后的 `add` 不一定把它
+加回去 —— 依赖装上了，但那一行从未组合，于是插件什么都不做，浏览器半边却照常被
+提供。开关没出现时，先确认 `dsh.profile.bundles` 里有这个包，没有就手动补上。
+
 ## 状态存放
 
 `<dshHome>/settings.yaml` 里一个布尔值：

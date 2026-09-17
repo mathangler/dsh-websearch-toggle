@@ -65,6 +65,13 @@ dsh plugin --profile web add link:<absolute path to this directory>
 Updating an installed `github:` plugin also needs `remove` + `add`, because pnpm
 skips resolution while the spec is unchanged.
 
+**Check the bundle list after any `remove` + `add`.** `dsh plugin remove` drops
+the package from `dsh.profile.bundles` in the profile's `package.json`, and the
+following `add` does not always put it back — the dependency is installed, but
+the row never composes, so the plugin silently does nothing while its browser
+half is still served. If the switch does not appear, confirm the package is
+listed in `dsh.profile.bundles` and re-add it there if not.
+
 ## State
 
 One boolean in `<dshHome>/settings.yaml`:
