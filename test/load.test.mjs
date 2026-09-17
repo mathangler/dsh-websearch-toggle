@@ -326,6 +326,46 @@ test('the stylesheet is injected, prefixed, token-only, and tied to the fiber', 
   assert.equal(loaded.styleTags[0].isConnected, false);
 });
 
+test('the switch opts out of the global superellipse, like every shell switch', () => {
+  // Regression, reported as "the switch looks different from the other plugins'
+  // switches". The theme injects
+  //   @supports (corner-shape:superellipse(1.5)) { *,:before,:after{corner-shape:var(--dsw-corner-shape)} }
+  // so EVERY rounded element renders as a squircle unless it opts out. The shipped
+  // Switch.module.css opts its track and thumb out; a hand-rolled copy that
+  // forgets to renders visibly different — which is exactly what happened.
+  const css = loadClient().styleTags[0].textContent;
+  const optedOut = [...css.matchAll(/\.(dshwst-(?:switch|thumb))\{[^}]*corner-shape:\s*round/gu)].map((m) => m[1]);
+  assert.ok(optedOut.includes('dshwst-switch'), 'the track must declare corner-shape: round');
+  assert.ok(optedOut.includes('dshwst-thumb'), 'the thumb must declare corner-shape: round');
+});
+
+test('the switch geometry matches the shipped primitive exactly', () => {
+  const css = loadClient().styleTags[0].textContent;
+  const rule = (selector) => {
+    const found = css.split(`${selector}{`)[1];
+    return found === undefined ? '' : found.split('}')[0];
+  };
+  const track = rule('.dshwst-switch');
+  assert.ok(track.includes('width:36px'), 'the track must be 36px wide');
+  assert.ok(track.includes('height:20px'), 'the track must be 20px tall');
+  assert.ok(track.includes('border-radius:10px'), 'the track radius must be half its height');
+  assert.ok(track.includes('padding:2px'), 'the track must pad 2px');
+  const thumb = rule('.dshwst-thumb');
+  assert.ok(thumb.includes('width:16px') && thumb.includes('height:16px'), 'the thumb must be 16px');
+  assert.ok(thumb.includes('border-radius:50%'), 'the thumb must be a circle');
+  assert.ok(css.includes('transform:translateX(16px)'), 'the checked thumb travel must match');
+  assert.ok(!track.includes('transition:background'), 'the shipped track has no background transition');
+});
+
+test('the wrapper mirrors the shipped cardEnd box', () => {
+  const css = loadClient().styleTags[0].textContent;
+  const end = css.split('.dshwst-end{')[1].split('}')[0];
+  assert.ok(end.includes('display:inline-flex'), 'cardEnd is inline-flex');
+  assert.ok(end.includes('position:relative'), 'cardEnd establishes its own position');
+  assert.ok(end.includes('z-index:1'), 'cardEnd is lifted, and the switch must sit in the same layer');
+  assert.ok(end.includes('flex:none'), 'cardEnd does not grow');
+});
+
 test('both locale dictionaries register and cover the same keys', () => {
   const loaded = loadClient();
   assert.deepEqual(loaded.localeRegisters.map((entry) => entry.id).sort(), ['en', 'zh']);
