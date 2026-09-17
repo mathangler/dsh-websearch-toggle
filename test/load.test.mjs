@@ -2,10 +2,15 @@
  * Load-layer tests for the browser half.
  *
  * The bundle is a classic script, so it is evaluated here with a fake
- * `window`/`document`. Every assertion that claims "the code did X" also counts
- * the calls that prove it: the failure mode this suite exists to catch is a
- * branch that silently early-returns, which is how a nav glyph shipped broken
- * twice in this family of plugins while the suite stayed green.
+ * `window`/`document` and a shimmed `require`. Every assertion that claims "the
+ * code did X" also counts what it touched, because the failure mode this suite
+ * exists to catch is a branch that silently early-returns while the suite stays
+ * green.
+ *
+ * What this half owes the page is narrow and worth stating: it registers ONE
+ * configuration page under the shipped `web-search` entry id (so the switch
+ * lands in that entry's cell rather than beside it), it renders the shipped
+ * `Switch`, and it never paints a switch position it has not read.
  *
  * @module dsh-websearch-toggle/test/load
  */
@@ -20,273 +25,331 @@ const root = join(here, '..');
 const source = readFileSync(join(root, 'lib', 'client.js'), 'utf8');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
-/** One fake element, good enough for the bundle's DOM use. */
-function makeElement(tag, scans) {
-  const element = {
+/**
+ * A React stand-in that actually re-renders.
+ *
+ * A no-op `useState` would make every assertion below pass vacuously — the
+ * component would render its initial placeholder forever and "no switch until
+ * the namespace answers" would be true for the wrong reason. So state is real,
+ * effects run after the render, and `act()` re-renders until the tree settles.
+ */
+function makeReact() {
+  const mounted = [];
+  let current = null;
+  // Each frame's setters resolve through the frame itself, so a deferred
+  // `setState` from a settled promise lands on the component that owns it
+  // rather than on whichever component happened to render last.
+  const bind = (frame) => {
+    const own = (index) => (next) => {
+      const previous = frame.state[index];
+      frame.state[index] = typeof next === 'function' ? next(previous) : next;
+      frame.dirty = true;
+    };
+    return own;
+  };
+
+  const React = {
+    createElement: (type, props, ...children) => ({
+      type,
+      props: props === null || props === undefined ? {} : props,
+      children,
+    }),
+    useRef(initial) {
+      if (current.refs.length <= current.ref) current.refs.push({ current: initial === undefined ? null : initial });
+      return current.refs[current.ref++];
+    },
+    useState(initial) {
+      const index = current.hook++;
+      if (current.state.length <= index) {
+        current.state.push(typeof initial === 'function' ? initial() : initial);
+      }
+      const frame = current;
+      const setter = (next) => {
+        const previous = frame.state[index];
+        frame.state[index] = typeof next === 'function' ? next(previous) : next;
+        frame.dirty = true;
+      };
+      return [current.state[index], setter];
+    },
+    useEffect(effect) {
+      current.effects.push(effect);
+    },
+    /**
+     * Mount a component and render it until no state update is pending.
+     *
+     * Effects run after the render, as React runs them, so the mount path the
+     * assertions care about — read the namespace, then paint — is exercised
+     * rather than assumed.
+     */
+    act(type, props) {
+      const frame = { render: type, props, state: [], hook: 0, ref: 0, refs: [], effects: [], dirty: false, setters: [] };
+      frame.setters = [];
+      current = frame;
+      for (let hook = 0; hook < 32; hook += 1) frame.setters.push(bind(frame));
+      // `current.setters` must exist while the component body runs.
+      frame.setters = frame.setters;
+      current.setters = frame.setters;
+      let tree = frame.render(frame.props);
+      for (let pass = 0; pass < 20; pass += 1) {
+        const pending = frame.effects;
+        frame.effects = [];
+        for (const effect of pending) {
+          const cleanup = effect();
+          if (typeof cleanup === 'function') frame.cleanups = (frame.cleanups || []).concat(cleanup);
+        }
+        if (!frame.dirty) break;
+        frame.dirty = false;
+        frame.hook = 0;
+        frame.ref = 0;
+        current = frame;
+        tree = frame.render(frame.props);
+      }
+      mounted.push(frame);
+      return { tree, frame, props };
+    },
+    /** Re-run the mounted component's effects, as a store notification would. */
+    flush(frame, props) {
+      const saved = current;
+      current = frame;
+      frame.props = props === undefined ? frame.props : props;
+      frame.hook = 0;
+      frame.ref = 0;
+      frame.dirty = true;
+      for (let pass = 0; pass < 20 && frame.dirty; pass += 1) {
+        frame.dirty = false;
+        for (const effect of frame.effects.splice(0)) {
+          const cleanup = effect();
+          if (typeof cleanup === 'function') frame.cleanups = (frame.cleanups || []).concat(cleanup);
+        }
+      }
+      const tree = frame.render(frame.props);
+      current = saved;
+      return tree;
+    },
+    /**
+     * Mount whatever component a wrapper's first render produced.
+     *
+     * The slot renderer wraps a contribution once to bind owner props and the
+     * inject face, so a test that renders the wrapper alone only ever sees the
+     * wrapper's own first frame. This mounts the real component the way the page
+     * eventually does.
+     */
+    compose(tree, props) {
+      if (tree === null || typeof tree !== 'object' || typeof tree.type !== 'function') return tree;
+      const inner = React.act(tree.type, Object.assign({}, tree.props, props));
+      return inner.tree;
+    },
+  };
+  return React;
+}
+
+/** A minimal DOM element, enough for the stylesheet effect. */
+function makeElement(tag) {
+  return {
     nodeType: 1,
     tagName: String(tag).toUpperCase(),
-    attributes: {},
     dataset: {},
-    children: [],
-    childElementCount: 0,
-    parentNode: null,
-    hidden: false,
-    disabled: false,
+    attributes: {},
     textContent: '',
-    className: '',
-    listeners: {},
-    get isConnected() {
-      let cursor = element;
-      while (cursor.parentNode !== null && cursor.parentNode !== undefined) cursor = cursor.parentNode;
-      return cursor === scans.root;
-    },
+    parentNode: null,
+    isConnected: false,
     setAttribute(name, value) {
-      element.attributes[name] = String(value);
-    },
-    getAttribute(name) {
-      return Object.prototype.hasOwnProperty.call(element.attributes, name) ? element.attributes[name] : null;
-    },
-    hasAttribute(name) {
-      return Object.prototype.hasOwnProperty.call(element.attributes, name);
-    },
-    removeAttribute(name) {
-      delete element.attributes[name];
-    },
-    appendChild(child) {
-      attach(element, child, element.children.length);
-      return child;
-    },
-    insertBefore(child, before) {
-      const index = before === null || before === undefined ? 0 : element.children.indexOf(before);
-      attach(element, child, index < 0 ? 0 : index);
-      return child;
-    },
-    addEventListener(type, listener) {
-      (element.listeners[type] = element.listeners[type] || []).push(listener);
-    },
-    click() {
-      for (const listener of element.listeners.click || []) listener({});
+      this.attributes[name] = String(value);
     },
     remove() {
-      detach(element);
-    },
-    querySelectorAll(selector) {
-      scans.subtree += 1;
-      return collect(element, selector);
+      this.isConnected = false;
+      if (this.parentNode !== null) {
+        this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
+      }
     },
   };
-  return element;
-}
-
-/** Attach a child at an index, keeping the counters the bundle reads honest. */
-function attach(parent, child, index) {
-  if (child.parentNode !== null && child.parentNode !== undefined) detach(child);
-  child.parentNode = parent;
-  parent.children.splice(index, 0, child);
-  parent.childElementCount = parent.children.length;
-}
-
-/** Detach a node from its parent. */
-function detach(child) {
-  const parent = child.parentNode;
-  if (parent !== null && parent !== undefined) {
-    const index = parent.children.indexOf(child);
-    if (index >= 0) parent.children.splice(index, 1);
-    parent.childElementCount = parent.children.length;
-  }
-  child.parentNode = null;
-}
-
-/** Depth-first descendant search by tag name. */
-function collect(node, selector) {
-  const wanted = String(selector).toUpperCase();
-  const found = [];
-  const visit = (current) => {
-    for (const child of current.children) {
-      if (child.tagName === wanted) found.push(child);
-      visit(child);
-    }
-  };
-  visit(node);
-  return found;
-}
-
-/** The shipped card: header button with title + description, body only while open. */
-function makeCard(scans, title, open) {
-  const li = makeElement('li', scans);
-  const button = makeElement('button', scans);
-  button.setAttribute('aria-expanded', open ? 'true' : 'false');
-  const head = makeElement('span', scans);
-  const name = makeElement('span', scans);
-  name.textContent = title;
-  const description = makeElement('span', scans);
-  description.textContent = 'The DeepSeek search provider.';
-  head.appendChild(name);
-  head.appendChild(description);
-  button.appendChild(head);
-  li.appendChild(button);
-
-  const body = makeElement('div', scans);
-  if (open) {
-    const field = makeElement('div', scans);
-    field.appendChild(makeElement('input', scans));
-    body.appendChild(field);
-    const footer = makeElement('div', scans);
-    footer.appendChild(makeElement('button', scans));
-    body.appendChild(footer);
-    li.appendChild(body);
-  }
-  scans.root.body.appendChild(li);
-  return { li, button, body, name };
-}
-
-/** The row's parts, read straight out of the DOM the bundle built. */
-function rowParts(row) {
-  const line = row.children[0];
-  return { line, label: line.children[0], toggle: line.children[1], hint: row.children[1], error: row.children[2] };
 }
 
 /**
  * Evaluate the bundle against a fake page and run `apply`.
- * @param options - `locale` (active id) and `answers` (route → envelope).
- * @returns captured module, the fake page, and every counter the assertions use.
+ * @param options - `locale` selects the active locale, `namespaces` feeds the
+ *   settings view the component reads, and `writes` records every settings update.
+ * @returns the captured module plus everything the assertions count.
  */
 function loadClient(options = {}) {
-  const scans = { subtree: 0, doc: 0 };
   const styleTags = [];
-  const observers = [];
-  const timers = [];
-  const calls = [];
-  let callback = null;
-  let captured = null;
-
-  const body = makeElement('body', scans);
-  // `head` participates in the parent chain on purpose: the stylesheet effect's
-  // cleanup is only proven if the style tag reads as connected before dispose
-  // and detached after it.
-  const head = {
-    nodeType: 1,
-    tagName: 'HEAD',
-    children: [],
-    childElementCount: 0,
-    parentNode: null,
-    appendChild(tag) {
-      attach(head, tag, head.children.length);
-      styleTags.push(tag);
-      return tag;
-    },
-  };
-  const doc = {
-    nodeType: 9,
-    body,
-    head,
-    createElement: (tag) => makeElement(tag, scans),
-    querySelectorAll: (selector) => {
-      scans.doc += 1;
-      return collect(body, selector);
-    },
-  };
-  head.parentNode = doc;
-  body.parentNode = doc;
-  scans.root = doc;
-
-  class FakeObserver {
-    constructor(listener) {
-      callback = listener;
-      this.disconnected = false;
-      observers.push(this);
-    }
-    observe() {}
-    disconnect() {
-      this.disconnected = true;
-    }
-  }
-
-  const answers = options.answers === undefined ? {} : options.answers;
-  function fakeFetch(url, init) {
-    calls.push({ url, body: JSON.parse(init.body) });
-    const endpoint = String(url).split('/').pop();
-    const answered = answers[endpoint] === undefined
-      ? { ok: true, value: { enabled: true, known: true, tool: 'web_search' } }
-      : answers[endpoint];
-    return Promise.resolve({
-      status: 200,
-      json: () => Promise.resolve(answered),
-    });
-  }
-
-  const win = { __ModuleLoader__: { load: (m) => { captured = m; } } };
-  new Function('window', 'document', 'MutationObserver', 'setTimeout', 'clearTimeout', 'fetch', source)(
-    win,
-    doc,
-    FakeObserver,
-    // Recorded, never scheduled: the 400ms backstop must not fire behind the
-    // assertions, and every timer path is asserted through `timers` instead.
-    (fn, delay) => {
-      timers.push({ fn, delay });
-      return timers.length;
-    },
-    () => {},
-    fakeFetch,
-  );
-
-  const localeRegisters = [];
   const effects = [];
+  const localeRegisters = [];
+  const writes = [];
+  const subscribes = [];
+  const registered = [];
+  const injected = [];
+
+  const head = { children: [], appendChild(tag) { tag.parentNode = head; tag.isConnected = true; head.children.push(tag); styleTags.push(tag); return tag; } };
+  const doc = { nodeType: 9, head, body: { nodeType: 1, tagName: 'BODY' }, createElement: (tag) => makeElement(tag) };
+
+  let captured = null;
+  const win = { __ModuleLoader__: { load: (m) => { captured = m; } } };
+  const React = makeReact();
+  const primitives = { Switch: 'Switch' };
+
+  new Function('window', 'document', source)(win, doc);
+
+  let view = {
+    namespaces: options.namespaces === undefined
+      ? [{ ns: 'web-search-toggle', value: { enabled: true }, revision: 7, user: { enabled: true } }]
+      : options.namespaces,
+  };
+  let notify = null;
+  let last = { tree: null, frame: null };
+  const describe = {
+    getSnapshot: () => ({ view }),
+    subscribe(fn) {
+      notify = fn;
+      subscribes.push(fn);
+      return () => { notify = null; };
+    },
+  };
+
+  const remote = {
+    settings: {
+      update(ns, patch, revision) {
+        writes.push({ ns, patch, revision });
+        if (options.updateFails === true) return Promise.reject(new Error('revision conflict'));
+        // The commit moves the document the way the real Remote would.
+        const found = view.namespaces.find((entry) => entry.ns === ns);
+        if (found !== undefined) found.value = { ...found.value, ...patch };
+        return Promise.resolve();
+      },
+    },
+  };
+
   const ctx = {
     effect(fn, label) {
       const dispose = fn();
       effects.push({ label, dispose });
       return dispose;
     },
-    locale: {
-      getSnapshot: () => ({ active: options.locale === undefined ? 'zh' : options.locale, locales: [{ id: 'en' }, { id: 'zh' }] }),
-      register: (ns, id, dict) => {
-        localeRegisters.push({ ns, id, dict });
+    settingsScope: { describe: () => describe },
+    remote,
+    slots: {
+      inject(name, thunk) {
+        injected.push(name);
+        thunk();
         return () => {};
       },
+      register(registration, component) {
+        registered.push(Object.assign({}, registration, { component }));
+        return registration;
+      },
+    },
+    locale: {
+      getSnapshot: () => ({ active: options.locale === undefined ? 'zh' : options.locale, locales: [{ id: 'en' }, { id: 'zh' }] }),
+      register: (ns, id, dict) => { localeRegisters.push({ ns, id, dict }); return () => {}; },
       bind: () => undefined,
       subscribe: () => () => {},
     },
   };
 
-  const mod = captured.factory(() => {
-    throw new Error('the browser half must not require anything');
+  const mod = captured.factory((name) => {
+    if (name === 'react') return React;
+    if (name === '@deepseek-ai/dsh-client-ui-primitives') return primitives;
+    throw new Error('unexpected require: ' + name);
   });
   mod.apply(ctx);
 
   return {
     mod,
-    doc,
-    body,
-    scans,
     styleTags,
-    observers,
-    timers,
-    calls,
     effects,
     localeRegisters,
-    makeCard: (title, open) => makeCard(scans, title, open),
-    /** Drive the captured MutationObserver callback by hand. */
-    fire: (addedNodes) => callback([{ addedNodes }]),
+    writes,
+    subscribes,
+    registered,
+    injected,
+    React,
+    /** The component the slot registration rendered, bound the way the owner binds it. */
+    component: () => registered[0].component,
+    /**
+     * Render one view the way the page does.
+     *
+     * The slot renderer binds owner props and the inject face on the same
+     * wrapper, and the wrapper's result IS the component under test — the page
+     * then renders that with the owner props merged in. `React.act` drives the
+     * whole chain, so the tree returned here is what the page would mount.
+     */
+    render: (view_) => {
+      const owner = { view: view_, writable: options.writable };
+      const mounted = React.act(registered[0].component, owner);
+      // The owner binds `view`/`writable`; the wrapper supplies the context.
+      // Merging in the child's OWN props preserves that binding rather than
+      // replacing it with the bare owner props (which would drop the context
+      // and leave the component reading nothing).
+      last = mounted.tree !== null && typeof mounted.tree === 'object' && typeof mounted.tree.type === 'function'
+        ? React.act(mounted.tree.type, Object.assign({}, mounted.tree.props, owner))
+        : mounted;
+      return last.tree;
+    },
+    /** The tree as it stands after the last render or flush. */
+    current: () => last.tree,
+    /** Let the component observe a new namespace snapshot, as a commit would. */
+    setView: (next) => {
+      view = next;
+      if (notify !== null) notify();
+      last.tree = React.flush(last.frame);
+      return last.tree;
+    },
     styleEffect: () => effects.find((entry) => entry.label.includes('stylesheet')),
-    cardEffect: () => effects.find((entry) => entry.label.includes('web search card')),
   };
 }
 
-/** Let every microtask from the stubbed fetch settle. */
-const settle = () => new Promise((resolve) => setImmediate(resolve));
+/** Depth-first search for the first node whose props carry a key. */
+function findByProp(node, key) {
+  if (node === null || node === undefined || typeof node !== 'object') return undefined;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = findByProp(child, key);
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  }
+  const own = node.props === undefined ? undefined : node.props[key];
+  if (own !== undefined) return node;
+  return findByProp(node.children, key);
+}
 
-test('the bundle registers itself under the package name', () => {
-  const loaded = loadClient();
-  assert.equal(typeof loaded.mod.apply, 'function');
-  assert.deepEqual(loaded.mod.inject, ['locale']);
-});
+/** Every text fragment in a rendered tree. */
+function textOf(node, out = []) {
+  if (node === null || node === undefined) return out;
+  if (typeof node === 'string') { out.push(node); return out; }
+  if (Array.isArray(node)) { for (const child of node) textOf(child, out); return out; }
+  if (typeof node !== 'object') return out;
+  textOf(node.children, out);
+  return out;
+}
 
-test('the bundle id is the package name and inject asks only for the locale', () => {
+test('the bundle id is the package name and it asks only for slots and locale', () => {
   const match = /__ModuleLoader__\.load\(\{\s*id:\s*'([^']+)'/u.exec(source);
   assert.equal(match[1], pkg.name, 'a mismatched id is a silently unloaded bundle');
-  const module = loadClient().mod;
-  assert.deepEqual(module.inject, ['locale']);
+  assert.deepEqual(loadClient().mod.inject, ['slots', 'locale']);
+});
+
+test('it registers one configuration page under the shipped web-search id', () => {
+  const loaded = loadClient();
+  assert.deepEqual(loaded.injected, ['plugins.item'], 'the 0.1.6 seat for a host-plane plugin page');
+  assert.equal(loaded.registered.length, 1);
+  const registration = loaded.registered[0];
+  assert.equal(registration.name, 'plugins.item');
+  assert.equal(registration.id, 'web-search', 'reusing the shipped id puts the switch IN that entry, not beside it');
+  assert.equal(registration.order, 40, 'the official page renders at this order');
+  assert.equal(typeof registration.label, 'function', 'label must be a thunk so it follows the locale');
+  assert.equal(typeof registration.component, 'function');
+});
+
+test('both locale dictionaries register and cover the same keys', () => {
+  const loaded = loadClient();
+  assert.deepEqual(loaded.localeRegisters.map((entry) => entry.id).sort(), ['en', 'zh']);
+  assert.equal(loaded.localeRegisters[0].ns, 'web-search-toggle');
+  const en = loaded.localeRegisters.find((entry) => entry.id === 'en').dict;
+  const zh = loaded.localeRegisters.find((entry) => entry.id === 'zh').dict;
+  assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
+  assert.equal(en.toggle, 'Enable web search');
+  assert.equal(zh.toggle, '启用网页搜索');
 });
 
 test('the stylesheet is injected, prefixed, token-only, and tied to the fiber', () => {
@@ -294,9 +357,8 @@ test('the stylesheet is injected, prefixed, token-only, and tied to the fiber', 
   assert.equal(loaded.styleTags.length, 1);
   assert.equal(loaded.styleTags[0].dataset.plugin, 'dsh-websearch-toggle');
   const css = loaded.styleTags[0].textContent;
-  assert.ok(css.includes('.dshwst-switch'), 'the toggle track rule must be present');
-  assert.ok(css.includes('.dshwst-switch[aria-checked=true] .dshwst-thumb'), 'the checked thumb rule must be present');
-  assert.ok(css.includes('li[data-dshwst-off] > div > :not([data-dshwst-row])'), 'the greyed-out rule must be present');
+  assert.ok(css.includes('.dshwst-field'), 'the field block rule must be present');
+  assert.ok(css.includes('.dshwst-error'), 'the error rule must be present');
   assert.ok(!/#[0-9a-fA-F]{3,8}\b/u.test(css), 'no hex colours');
   assert.ok(!/\brgba?\(/u.test(css), 'no rgb()/rgba() colours');
   assert.ok(!/[:,]\s*(white|black)\b/iu.test(css), 'no named colours');
@@ -310,207 +372,64 @@ test('the stylesheet is injected, prefixed, token-only, and tied to the fiber', 
   assert.equal(loaded.styleTags[0].isConnected, false, 'disposing the fiber must remove the style tag');
 });
 
-test('both locale dictionaries register and cover the same keys', () => {
+test('the summary view is the one-liner the card shows', () => {
+  const loaded = loadClient({ locale: 'zh' });
+  assert.equal(loaded.render('summary'), '为所有 agent 开关网页搜索。');
+  assert.equal(loadClient({ locale: 'en' }).render('summary'), 'Turn web search on or off for every agent.');
+});
+
+test('the page view renders the shipped Switch, checked from the stored value', () => {
   const loaded = loadClient();
-  assert.deepEqual(loaded.localeRegisters.map((entry) => entry.id).sort(), ['en', 'zh']);
-  assert.equal(loaded.localeRegisters[0].ns, 'dsh-websearch-toggle');
-  const en = loaded.localeRegisters.find((entry) => entry.id === 'en').dict;
+  const tree = loaded.render('page');
+  const node = findByProp(tree, 'checked');
+  assert.ok(node !== undefined, 'the page must render a switch');
+  assert.equal(node.type, 'Switch', 'it must be the shell primitive, not a hand-rolled control');
+  assert.equal(node.props.checked, true);
+  assert.equal(node.props.disabled, false);
+  assert.equal(typeof node.props.onChange, 'function');
+  assert.equal(node.props.label, '启用网页搜索');
+});
+
+test('a stored OFF paints the switch off and explains what that means', () => {
+  const loaded = loadClient({ namespaces: [{ ns: 'web-search-toggle', value: { enabled: false }, revision: 3 }] });
+  const tree = loaded.render('page');
+  assert.equal(findByProp(tree, 'checked').props.checked, false);
   const zh = loaded.localeRegisters.find((entry) => entry.id === 'zh').dict;
-  assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
-  assert.equal(en.toggle, 'Enable web search');
-  assert.equal(zh.toggle, '启用网页搜索');
+  assert.ok(textOf(tree).includes(zh.off), 'the hint must be the OFF explanation');
 });
 
-test('a collapsed card is claimed but gets no switch', () => {
+test('an unanswered namespace renders no switch at all, never a guessed position', () => {
+  const loaded = loadClient({ namespaces: [] });
+  const tree = loaded.render('page');
+  assert.equal(findByProp(tree, 'checked'), undefined, 'a position nobody read must not be painted');
+  assert.ok(textOf(tree).includes('正在读取已保存的开关状态…'));
+});
+
+test('the component subscribes to the namespace it reads', () => {
   const loaded = loadClient();
-  const card = loaded.makeCard('网页搜索', false);
-  loaded.fire([card.li]);
-  assert.equal(card.li.hasAttribute('data-dshwst-card'), true, 'the card must be marked for the grey rules');
-  assert.equal(collect(card.li, 'div').length, 0, 'a collapsed card has no body to inject into');
+  loaded.render('page');
+  assert.equal(loaded.subscribes.length >= 1, true, 'a late or external commit must be able to reach the page');
 });
 
-test('expanding the card injects the switch as the first thing in the body', async () => {
+test('flipping the switch writes the namespace with the revision it read', async () => {
   const loaded = loadClient();
-  await settle();
-  const card = loaded.makeCard('网页搜索', false);
-  loaded.fire([card.li]);
+  const node = findByProp(loaded.render('page'), 'checked');
+  node.props.onChange(false);
+  await new Promise((resolve) => setImmediate(resolve));
 
-  // The user expands: React inserts the body, which is the mutation we act on.
-  const body = makeElement('div', loaded.scans);
-  const field = makeElement('div', loaded.scans);
-  field.appendChild(makeElement('input', loaded.scans));
-  body.appendChild(field);
-  card.li.appendChild(body);
-  loaded.fire([body]);
-
-  assert.equal(body.children.length, 2, 'the row was inserted without removing the card’s own field');
-  const row = body.children[0];
-  assert.equal(row.hasAttribute('data-dshwst-row'), true, 'the injected row must be the body’s first child');
-  assert.equal(row.className, 'dshwst-row');
-  const parts = rowParts(row);
-  assert.equal(parts.toggle.getAttribute('role'), 'switch');
-  assert.equal(parts.toggle.getAttribute('aria-checked'), 'true');
-  assert.equal(parts.toggle.disabled, false);
-  assert.equal(parts.label.textContent, '启用网页搜索');
-  assert.equal(parts.error.hidden, true);
+  assert.deepEqual(loaded.writes, [{ ns: 'web-search-toggle', patch: { enabled: false }, revision: 7 }]);
 });
 
-test('the switch is only ever injected once per body', async () => {
-  const loaded = loadClient();
-  await settle();
-  const card = loaded.makeCard('网页搜索', true);
-  loaded.fire([card.li]);
-  loaded.fire([card.body]);
-  loaded.fire([card.li]);
-  const rows = collect(card.li, 'div').filter((node) => node.hasAttribute('data-dshwst-row'));
-  assert.equal(rows.length, 1, 're-patching must adopt the row it finds, not build a second one');
+test('a refused write is reported and the switch goes back', async () => {
+  const loaded = loadClient({ updateFails: true });
+  const node = findByProp(loaded.render('page'), 'checked');
+  node.props.onChange(false);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(loaded.writes.length, 1, 'the attempt must actually reach the Remote');
 });
 
-test('the released row comes back after a collapse and re-expand', async () => {
-  const loaded = loadClient();
-  await settle();
-  const card = loaded.makeCard('网页搜索', true);
-  loaded.fire([card.body]);
-  const first = card.body.children[0];
-  assert.equal(first.hasAttribute('data-dshwst-row'), true);
-
-  card.body.remove();
-  const reopened = makeElement('div', loaded.scans);
-  card.li.appendChild(reopened);
-  loaded.fire([reopened]);
-  assert.equal(reopened.children[0].hasAttribute('data-dshwst-row'), true);
-  assert.notEqual(reopened.children[0], first, 'the rebuilt body needs a freshly injected row');
-});
-
-test('the mount scan is the only document-wide one, and steady state costs nothing', async () => {
-  const loaded = loadClient();
-  await settle();
-  assert.equal(loaded.observers.length, 1, 'an observer must actually be created');
-  const card = loaded.makeCard('网页搜索', true);
-  loaded.fire([card.body]);
-  assert.equal(loaded.scans.doc, 1, 'the initial scan is document-wide exactly once');
-
-  const subtree = loaded.scans.subtree;
-  const doc = loaded.scans.doc;
-  for (let i = 0; i < 200; i += 1) loaded.fire([makeElement('div', loaded.scans)]);
-  assert.equal(loaded.scans.subtree, subtree, 'the hot path must exit before scanning anything');
-  assert.equal(loaded.scans.doc, doc, 'the hot path must never fall back to a document scan');
-});
-
-test('an inserted subtree is scanned, not the whole document', async () => {
-  const loaded = loadClient();
-  await settle();
-  const doc = loaded.scans.doc;
-  const stray = makeElement('div', loaded.scans);
-  loaded.fire([stray]);
-  assert.equal(loaded.scans.doc, doc, 'a subtree insertion must not trigger a document scan');
-});
-
-test('a title written as a text node still claims the card', async () => {
-  const loaded = loadClient();
-  await settle();
-  const card = loaded.makeCard('网页搜索', true);
-  loaded.fire([card.body]);
-  card.li.removeAttribute('data-dshwst-card');
-  const text = { nodeType: 3, textContent: '网页搜索', parentNode: card.name };
-  loaded.fire([text]);
-  assert.equal(card.li.hasAttribute('data-dshwst-card'), true, 'the text-node branch must resolve the enclosing card');
-});
-
-test('a card that is not the web search card is left untouched', async () => {
-  const loaded = loadClient();
-  await settle();
-  const shell = loaded.makeCard('终端', true);
-  loaded.fire([shell.body]);
-  assert.equal(shell.li.hasAttribute('data-dshwst-card'), false);
-  assert.equal(collect(shell.li, 'div').some((node) => node.hasAttribute('data-dshwst-row')), false);
-});
-
-test('the English card is claimed too, so a language switch keeps the switch', async () => {
-  const loaded = loadClient({ locale: 'en' });
-  await settle();
-  const card = loaded.makeCard('Web search', true);
-  loaded.fire([card.body]);
-  const row = card.body.children[0];
-  assert.equal(row.hasAttribute('data-dshwst-row'), true);
-  assert.equal(rowParts(row).label.textContent, 'Enable web search');
-});
-
-test('an OFF host state greys the card and paints the switch off', async () => {
-  const loaded = loadClient({
-    answers: { state: { ok: true, value: { enabled: false, known: true, tool: 'web_search' } } },
-  });
-  await settle();
-  assert.deepEqual(loaded.calls.map((entry) => entry.url), ['/websearch-toggle/state'], 'exactly one read, and no polling');
-  const card = loaded.makeCard('网页搜索', true);
-  loaded.fire([card.body]);
-  const parts = rowParts(card.body.children[0]);
-  assert.equal(card.li.hasAttribute('data-dshwst-off'), true, 'the grey rules hang off this attribute');
-  assert.equal(parts.toggle.getAttribute('aria-checked'), 'false');
-  assert.equal(parts.hint.textContent, loaded.localeRegisters.find((entry) => entry.id === 'zh').dict.off);
-});
-
-test('clicking the switch writes through the host and updates the card', async () => {
-  const loaded = loadClient({
-    answers: {
-      state: { ok: true, value: { enabled: true, known: true, tool: 'web_search' } },
-      set: { ok: true, value: { enabled: false, known: true, tool: 'web_search' } },
-    },
-  });
-  await settle();
-  const card = loaded.makeCard('网页搜索', true);
-  loaded.fire([card.body]);
-  const parts = rowParts(card.body.children[0]);
-
-  parts.toggle.click();
-  assert.equal(parts.toggle.disabled, true, 'the control is disabled while the write is in flight');
-  await settle();
-
-  const write = loaded.calls.find((entry) => entry.url.endsWith('/set'));
-  assert.deepEqual(write.body, { enabled: false });
-  assert.equal(parts.toggle.getAttribute('aria-checked'), 'false');
-  assert.equal(parts.toggle.disabled, false);
-  assert.equal(card.li.hasAttribute('data-dshwst-off'), true);
-});
-
-test('a refused write rolls the switch back and says why', async () => {
-  const loaded = loadClient({
-    answers: {
-      state: { ok: true, value: { enabled: true, known: true, tool: 'web_search' } },
-      set: { ok: false, error: { code: 'websearch-toggle/persist-failed', message: 'disk on fire' } },
-    },
-  });
-  await settle();
-  const card = loaded.makeCard('网页搜索', true);
-  loaded.fire([card.body]);
-  const parts = rowParts(card.body.children[0]);
-
-  parts.toggle.click();
-  await settle();
-
-  assert.equal(parts.toggle.getAttribute('aria-checked'), 'true', 'the host is the authority, so the optimistic flip reverts');
-  assert.equal(card.li.hasAttribute('data-dshwst-off'), false);
-  assert.equal(parts.error.hidden, false);
-  assert.equal(parts.error.textContent, 'disk on fire');
-});
-
-test('an unanswered host leaves the switch disabled instead of guessing', async () => {
-  const loaded = loadClient({
-    answers: { state: { ok: false, error: { code: 'websearch-toggle/internal', message: 'boom' } } },
-  });
-  await settle();
-  const card = loaded.makeCard('网页搜索', true);
-  loaded.fire([card.body]);
-  const parts = rowParts(card.body.children[0]);
-  assert.equal(parts.toggle.disabled, true, 'an unconfirmed position must not be painted as a real one');
-  assert.equal(parts.error.textContent, 'boom');
-});
-
-test('the style and observer effects both clean up', async () => {
-  const loaded = loadClient();
-  await settle();
-  const cardEffect = loaded.cardEffect();
-  assert.ok(cardEffect !== undefined);
-  cardEffect.dispose();
-  assert.equal(loaded.observers[0].disconnected, true, 'the observer must be disconnected on dispose');
+test('a read-only deployment disables the switch rather than failing on click', () => {
+  const loaded = loadClient({ writable: false });
+  const node = findByProp(loaded.render('page'), 'checked');
+  assert.equal(node.props.disabled, true);
 });

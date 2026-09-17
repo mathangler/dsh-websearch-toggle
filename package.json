@@ -1,7 +1,7 @@
 {
   "name": "dsh-websearch-toggle",
-  "version": "0.1.0",
-  "description": "A live enable/disable switch for the Web search plugin card in DeepSeek Harness: the switch is injected into the card's expanded configuration, greys the card out when off, and withholds the web_search tool from every agent.",
+  "version": "0.2.0",
+  "description": "A live on/off switch ON the Web search plugin page in DeepSeek Harness: registered into that entry on the sidebar Plugins page, it withholds the web_search tool from every agent when off.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
