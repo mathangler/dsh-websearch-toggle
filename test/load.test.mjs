@@ -329,16 +329,29 @@ test('the bundle id is the package name and it asks only for slots and locale', 
   assert.deepEqual(loadClient().mod.inject, ['slots', 'locale']);
 });
 
-test('it registers one configuration page under the shipped web-search id', () => {
+test('it registers its own entry and NEVER reuses a shipped id', () => {
   const loaded = loadClient();
   assert.deepEqual(loaded.injected, ['plugins.item'], 'the 0.1.6 seat for a host-plane plugin page');
   assert.equal(loaded.registered.length, 1);
   const registration = loaded.registered[0];
   assert.equal(registration.name, 'plugins.item');
-  assert.equal(registration.id, 'web-search', 'reusing the shipped id puts the switch IN that entry, not beside it');
-  assert.equal(registration.order, 40, 'the official page renders at this order');
+  assert.equal(registration.id, 'web-search-toggle');
+  // The slot catalog: "reusing a shipped id puts you in THAT cell and replaces
+  // it". Reusing `web-search` evicted the official page — and, through the
+  // official package's availability sync, its siblings too. This assertion is
+  // the regression guard for that.
+  assert.notEqual(registration.id, 'web-search', 'a shipped id may never be reused');
+  for (const shipped of ['bash', 'agent-loop', 'subagent', 'web-search']) {
+    assert.notEqual(registration.id, shipped, `shipped entry id must stay untouched: ${shipped}`);
+  }
+  assert.equal(registration.order, 41, 'directly after the official Web search entry (40)');
   assert.equal(typeof registration.label, 'function', 'label must be a thunk so it follows the locale');
   assert.equal(typeof registration.component, 'function');
+});
+
+test('the label is this entry’s own title, not the switch caption', () => {
+  assert.equal(loadClient({ locale: 'zh' }).registered[0].label(), '网页搜索开关');
+  assert.equal(loadClient({ locale: 'en' }).registered[0].label(), 'Web search switch');
 });
 
 test('both locale dictionaries register and cover the same keys', () => {

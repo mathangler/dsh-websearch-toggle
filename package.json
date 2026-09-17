@@ -1,6 +1,6 @@
 {
   "name": "dsh-websearch-toggle",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A live on/off switch ON the Web search plugin page in DeepSeek Harness: registered into that entry on the sidebar Plugins page, it withholds the web_search tool from every agent when off.",
   "type": "module",
   "main": "lib/index.js",

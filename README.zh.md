@@ -2,9 +2,9 @@
 
 给 DeepSeek Harness 的「**网页搜索**」插件页面加一个真正生效的开关。
 
-打开侧栏的**插件**页面 → **网页搜索**条目 → 开关就在该条目页面的第一行，位于它所
-管辖的 API Key、接口地址、单次请求最多搜索次数三个字段之上。卡片不展开时页面上
-没有任何控件。
+打开侧栏的**插件**页面。开关是独立的一个条目「**网页搜索开关**」，就在官方
+「**网页搜索**」条目旁边。官方条目原封保留它自己的 API Key、接口地址、次数上限
+字段 —— 本插件只增加一个开关，不改动官方任何内容。
 
 [English](README.md) | 中文
 
@@ -78,10 +78,15 @@ restriction would mask every agent"）。可用的接缝因此是组装 waterfal
 `system-prompt/assemble` 的返回值被注册表视为权威，于是把工具和 `tool:web_search`
 从中移除，效果等同于 `tool-web` 的 `search: false` —— 但它是实时的、按步可逆的。
 
-浏览器半边就是一次普通的 slot 注册，注册进 `plugins.item`，并且**复用宿主自带的
-id `web-search`**：这样它落进那个条目已有的格子，条目保留自己的标题和表单、只在
-上方多出一个开关 —— 和 Subagent 条目现有的形态一致。（0.1.x 之所以要靠 DOM 注入，
-是因为 0.1.5 没有给第三方留位置；现在页面有了。）
+浏览器半边就是一次普通的 slot 注册，注册进 `plugins.item`，使用**自己的** id
+`web-search-toggle`，order 为 `41` —— 紧跟在官方「网页搜索」条目（40）之后，两者
+读起来像一组。官方内容一个都不改。
+
+这个 id 比看上去重要。slot 目录把规则写得很明白：*"a fresh id is added beside the
+shipped entries, while reusing a shipped id puts you in THAT cell and replaces
+it."*（用新 id 会加在官方条目旁边；复用官方 id 会占用那个格子并**替换**它。）
+本插件早先一个版本复用了官方 id `web-search`，以为是在那个页面上**增加**一个控件，
+实际上是**顶掉了**官方页面。要满足「在旁边增加、官方不变」，就必须用新 id。
 
 设置 schema 以内联校验器声明，而不用 `@deepseek-ai/schemastery`：本包安装进
 `<profile>/node_modules`，模块解析发生在它自己的目录里，而
@@ -106,8 +111,8 @@ node test/load.test.mjs        # 12 —— 浏览器半边（假 DOM + 假 React
 
 ## 已知边界
 
-- **开关绑定到宿主自带条目 id `web-search`。** 将来某个版本若改名，注册处需要跟着
-  改 id。
+- **用新 id，不占用官方 id。** 见「为什么这么实现」；开关永远在官方「网页搜索」
+  页面**旁边**，不进入它的格子。
 - **客户端只是表现层。** 浏览器半边加载失败时开关从页面上消失，但宿主效果仍按
   持久化的值生效。
 - 开关作用于当前这个服务进程。用同一个 home 起的第二个服务会读同一个

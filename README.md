@@ -11,6 +11,11 @@ English | [中文](README.zh.md)
 
 ## What the switch does
 
+Open the sidebar **Plugins** page. The switch is its own entry, **Web search
+switch**, sitting next to the official **Web search** entry. The official entry
+keeps its API key, endpoint and max-uses fields exactly as shipped — this plugin
+adds a switch and changes nothing official.
+
 **Off**
 
 - Every agent stops receiving the `web_search` tool. The tool — and the prompt
@@ -89,11 +94,16 @@ value the registry treats as authoritative, so removing the tool and
 `tool:web_search` from it is exactly what `tool-web` would have declined to
 register had its `search` flag been false — but live, and reversible per step.
 
-The browser half is an ordinary slot registration into `plugins.item` **under
-the shipped id `web-search`**, which puts it in that entry's existing cell: the
-"Web search" entry keeps its title and its form and gains a switch above them,
-the same shape the Subagent entry already has. (The 0.1.x build had to inject
-DOM into the card because 0.1.5 had no seat for it; the page now does.)
+The browser half is a plain slot registration into `plugins.item` under its
+**own** id, `web-search-toggle`, ordered `41` — directly after the official Web
+search entry (`40`) so the two read as one group. Nothing official is touched.
+
+The id matters more than it looks. The slot catalog states the rule: *"a fresh
+id is added beside the shipped entries, while reusing a shipped id puts you in
+THAT cell and replaces it."* An earlier build of this plugin registered under
+the shipped `web-search` id expecting to *add* a control to that page; it
+actually evicted the official page. Registering a fresh id is what "added
+beside, unchanged" requires.
 
 The settings schema is declared inline rather than with
 `@deepseek-ai/schemastery`: this package installs into
@@ -121,8 +131,8 @@ reason.
 
 ## Caveats
 
-- **The switch is keyed to the shipped entry id `web-search`.** If a future
-  release renames that entry, the registration needs the new id.
+- **A fresh entry id, not the shipped one.** See "Why it is built this way"; the
+  switch lives beside the official Web search page, never in its cell.
 - **Client-only presence.** If the browser half fails to load, the switch
   disappears from the page but the Host effect stays exactly as stored.
 - The switch governs this deployment's process. A second server started from the
