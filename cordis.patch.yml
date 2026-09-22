@@ -10,10 +10,20 @@
 # loads it from `exports["./client"]` because package.json declares
 # `dsh.client.platform: "web"`.
 #
-# This row composes no settings namespace and edits no other row: turning the
-# switch off is an in-process effect (the tool and its prompt section are
-# withheld from every step), not a profile edit. `web-search-deepseek` stays
-# exactly where the bundle put it.
+# Nothing in this file is platform-specific, and neither is any file that ships:
+# the host half is plain JavaScript on Cordis, and the browser half is DOM code.
+# Windows, macOS and Linux load the same bytes.
+#
+# The row id (`websearch-toggle`) is ALSO this plugin's settings namespace, since
+# 0.1.7 keys settings forms by Loader entry id. Renaming it here without renaming
+# `NS` in lib/client.js would leave the switch with nothing to read — a wiring
+# test reads this id and asserts the two agree.
+#
+# Turning the switch off is an in-process effect (the tool and its prompt section
+# are withheld from every step), not a profile edit: `web-search-deepseek` stays
+# exactly where the bundle put it. The only thing written anywhere is the user's
+# chosen position, which the settings form stores in the profile's own
+# cordis.patch.yml.
 
 - insert:
     - id: websearch-toggle

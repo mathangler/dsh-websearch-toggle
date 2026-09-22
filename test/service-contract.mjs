@@ -14,18 +14,19 @@
  * service the bundle injects is actually registered by one of them.
  *
  * Run:  node test/service-contract.mjs [rootDir]
- * The default root is the active dsh installation's bundled @deepseek-ai folder.
+ * The root is located portably (see ./dsh-install.mjs); pass one explicitly or
+ * set DSH_BUNDLED_PACKAGES when the automatic search cannot find it.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findBundledPackages } from './dsh-install.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 const source = readFileSync(join(root, 'lib', 'client.js'), 'utf8');
 
-const defaultRoot = 'C:/Users/chend/scoop/persist/nvm/nodejs/nodejs/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai';
-const packageRoot = process.argv[2] ?? defaultRoot;
+const packageRoot = findBundledPackages(process.argv[2]);
 
 /** The service names the bundle declares it needs. */
 const declared = (/const inject = \[([^\]]*)\]/u.exec(source)?.[1] ?? '')

@@ -7,16 +7,18 @@
  * `*,:before,:after{corner-shape:superellipse(1.5)}` turned the track into a
  * squircle so it no longer matched the other switches on the page.
  *
- * Run:  node test/style-parity.mjs
+ * Run:  node test/style-parity.mjs [path/to/Switch.module.css]
+ * The shipped stylesheet is located portably (see ./dsh-install.mjs).
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findBundledPackage } from './dsh-install.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 const shippedPath = process.argv[2]
-  ?? 'C:/Users/chend/scoop/persist/nvm/nodejs/v24.21.0/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/Switch.module.css';
+  ?? join(findBundledPackage('dsh-client-ui-primitives'), 'lib', 'Switch.module.css');
 
 const shipped = readFileSync(shippedPath, 'utf8');
 const source = readFileSync(join(root, 'lib', 'client.js'), 'utf8');

@@ -85,6 +85,31 @@ node test/style-parity.mjs       # the switch styles match the shipped primitive
 
 Run `service-contract` and `wiring` after every DSH upgrade.
 
+## Platforms
+
+**Windows, macOS and Linux all load the same bytes.** Nothing that ships is
+platform-specific:
+
+- the host half is plain JavaScript on Cordis — no shell-out, no `process.platform`,
+  no `node:os`, no filesystem path of its own;
+- the browser half is DOM and CSS, so it is the *browser* that matters, not the OS
+  (`corner-shape` is simply ignored where unsupported, exactly as it is for the
+  shell's own switch);
+- `cordis.patch.yml` is a two-line YAML insert;
+- the only path this plugin ever causes to be written is the one the platform
+  itself picks for the profile's `cordis.patch.yml`.
+
+The one surface caveat is not about the OS: the switch itself lives in the **Web
+UI** (`dsh.client.platform: "web"`). Installed into a headless profile the switch
+would have nowhere to appear, while the host effect still honours whatever
+position is stored.
+
+The checks under `test/` locate the installed `@deepseek-ai` packages themselves
+(see `test/dsh-install.mjs`), so they run unchanged from any OS, any cwd, and any
+Node manager. `test/serve-verify.ps1` is the one Windows-flavoured helper — it is
+a local verification harness and needs PowerShell 7, which also runs on macOS and
+Linux. No test ships in the package, so none of this affects an install.
+
 ## Install
 
 ```bash

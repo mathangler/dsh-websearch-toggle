@@ -70,6 +70,27 @@ node test/style-parity.mjs       # 开关样式与自带的那个一致
 
 **每次升级 DSH 之后，请跑 service-contract 和 wiring。**
 
+## 平台支持
+
+**Windows、macOS、Linux 加载的是同一份字节。** 发布内容里没有任何平台相关的东西：
+
+- 宿主半边是 Cordis 上的纯 JavaScript —— 不调用外部命令、不用 `process.platform`、
+  不用 `node:os`、自己也不碰任何路径；
+- 浏览器半边是 DOM + CSS，所以在意的是**浏览器**而不是操作系统（不支持
+  `corner-shape` 的浏览器直接忽略它，和宿主自带的那个开关表现一致）；
+- `cordis.patch.yml` 就是一个两行的 YAML insert；
+- 本插件唯一会导致被写入的路径，是平台自己为 profile 的 `cordis.patch.yml`
+  选定的那个。
+
+唯一的「面」上的限制与操作系统无关：开关本身活在 **Web UI** 里
+（`dsh.client.platform: "web"`）。装到 headless profile 里它没有地方显示，但宿主
+侧的效果照样按已存的值生效。
+
+`test/` 下的检查会自己定位已安装的 `@deepseek-ai` 包（见 `test/dsh-install.mjs`），
+因此在任何系统、任何工作目录、任何 Node 管理器下都能直接跑。只有
+`test/serve-verify.ps1` 是 Windows 风格的本地验证脚本，需要 PowerShell 7
+（它在 macOS 和 Linux 上也能跑）。**测试不进包**，所以这些都不影响安装出来的插件。
+
 ## 安装
 
 ```bash
