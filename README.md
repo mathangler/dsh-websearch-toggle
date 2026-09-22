@@ -41,21 +41,49 @@ switch to that card after render, and removes it when the plugin unloads.
 
 ## Requirements
 
-**DSH 0.1.7 or newer.** 0.1.7 renamed the client-side settings seam this plugin
-uses: `settingsScope.bind({ namespace })` became `configForms.get(namespace)`,
-and `settingsScope` no longer exists anywhere in 0.1.7. The client half declares
-`inject: ['locale', 'configForms']`, and an inject naming a service that does not
-exist leaves the plugin's fiber waiting forever — the Web UI then reports the
-plugin as broken, which is exactly what happened on the upgrade.
+**DSH 0.1.7 or newer.** 0.1.7 replaced how a plugin exposes settings, and this
+plugin moved with it. Three facts decide whether the switch works at all:
 
-`test/service-contract.mjs` guards this: it reads the installed packages and
-fails when any service the bundle injects is not registered. Nothing else in this
-repository caught the rename — the host half booted clean and the bundle still
-served HTTP 200 — so that check is the one to run after every DSH upgrade:
+1. **A plugin's settings page IS its `Config` schema.** The plugin exports
+   `Config = z.object({...})`; the settings system projects it into a form
+   automatically. `apply(ctx, config)` receives the resolved config, and
+   `config.enabled.get()` is a **live accessor** — a settings write is visible on
+   the very next step with no subscription to wire. The old
+   `settings.installSection(...)` / `settings.get(...)` calls do not exist in
+   0.1.7.
+2. **The settings namespace IS the Loader entry id.** This plugin's row is
+   `id: websearch-toggle` in `cordis.patch.yml`, so its namespace is
+   `websearch-toggle` and the browser half reaches it with
+   `configForms.get('websearch-toggle')`. A namespace a plugin invents cannot be
+   reached by its own browser half.
+3. **The field must be marked `.volatile()`.** `SettingsForms.describe()` builds
+   every namespace through `volatileForm(schema)`, which keeps only fields
+   carrying `meta.volatile` and returns `undefined` when none do — and `describe()`
+   then **skips the entry entirely**. A schema without it produces no namespace at
+   all, the browser reads nothing, and the switch sits disabled. `.volatile()`
+   also marks the field user-settable at runtime rather than fixed by the
+   composition.
+
+On 0.1.7 the choice lands in the profile's `cordis.patch.yml` as a config
+override for the entry (`settings.yaml` is no longer the live document):
+
+```yaml
+- id: websearch-toggle
+  name: dsh-websearch-toggle
+  config:
+    enabled: false
+```
+
+Three checks guard these, because no other test noticed either rename — the host
+booted clean and the bundle still served HTTP 200 while the switch was dead:
 
 ```bash
-node test/service-contract.mjs
+node test/service-contract.mjs   # every injected service really is registered
+node test/wiring.test.mjs        # the namespace, the volatile field, the effects
+node test/style-parity.mjs       # the switch styles match the shipped primitive
 ```
+
+Run `service-contract` and `wiring` after every DSH upgrade.
 
 ## Install
 

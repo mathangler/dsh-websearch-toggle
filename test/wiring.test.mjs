@@ -1,20 +1,25 @@
 /**
  * Host-wiring tests for the host half.
  *
- * Since DSH 0.1.6 the host half registers no route of its own: the browser
- * writes the switch through the platform's settings Remote, and the Host learns
- * about the commit through the namespace it installed. So what these assert is
- * the wiring the browser depends on — the namespace is installed even though
- * this package owns no settings storage itself, the composition entry's default
- * is the shipped ON, the assembly waterfall withholds the tool, and the guard
- * follows the switch.
+ * The browser OWNS the write: it commits through its settings form, and the Host
+ * merely reads the live config accessor. So what these assert is the wiring the
+ * browser depends on — the namespace really is the Loader entry id (a namespace
+ * this plugin invents cannot be reached by its own browser half), the Config
+ * default is the shipped ON, the assembly waterfall withholds the tool, and the
+ * guard follows the switch.
  *
  * @module dsh-websearch-toggle/test/wiring
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { apply, inject, name, SETTINGS_NAMESPACE, SettingsSchema } from '../lib/index.js';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { apply, inject, name, SETTINGS_NAMESPACE, Config } from '../lib/index.js';
 import { WEB_SEARCH_SECTION } from '../lib/host-core.js';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const source = readFileSync(join(root, 'lib', 'client.js'), 'utf8');
 
 /**
  * Boot the host half against a stub context that models the services it uses.
@@ -23,26 +28,21 @@ import { WEB_SEARCH_SECTION } from '../lib/host-core.js';
  * @returns the captured registrations plus the lever a settings commit pulls.
  */
 function boot(options = {}) {
-  const committed = { value: { enabled: options.enabled === undefined ? true : options.enabled } };
-  const have = new Set(options.services === undefined ? ['settings', 'systemPrompt', 'tools'] : options.services);
+  const have = new Set(options.services === undefined ? ['systemPrompt', 'tools'] : options.services);
 
   const listeners = [];
   const guards = [];
   const injected = [];
-  const installed = [];
   const effects = [];
 
-  const settings = {
-    installSection(owner, ns, schema, entry, hooks) {
-      installed.push({ owner, ns, schema, entry, hooks });
-      hooks.setSource(() => committed.value);
-    },
-    update: async (ns, patch) => {
-      committed.value = { ...committed.value, ...patch };
-      for (const registration of installed) registration.hooks.onChange();
-    },
-    get: () => committed.value,
-  };
+  /**
+   * The 0.1.7 config plane: `apply(ctx, config)` receives the resolved config and
+   * `config.enabled` is a LIVE accessor. A settings write from the browser shows
+   * up here as a changed value with no subscription, which is the whole reason
+   * this plugin no longer touches a `settings` service.
+   */
+  let stored = { enabled: options.enabled === undefined ? true : options.enabled };
+  const config = { enabled: { get: () => stored.enabled } };
 
   const ctx = {
     logger: undefined,
@@ -57,13 +57,11 @@ function boot(options = {}) {
     },
     get(service) {
       if (!have.has(service)) return undefined;
-      if (service === 'settings') return settings;
       return {};
     },
     inject(deps, callback) {
       injected.push(...deps);
       if (!deps.every((dep) => have.has(dep))) return () => {};
-      if (deps.includes('settings')) callback({ settings, effect: ctx.effect, on: ctx.on });
       if (deps.includes('systemPrompt')) callback({ on: ctx.on });
       if (deps.includes('tools')) {
         callback({
@@ -79,21 +77,22 @@ function boot(options = {}) {
     },
   };
 
-  apply(ctx);
+  apply(ctx, config);
 
   return {
     ctx,
+    config,
     listeners,
     guards,
     injected,
-    installed,
     effects,
-    committed,
-    listenerFor: (event) => listeners.find((entry) => entry.event === event),
-    /** Commit a new position the way a settings write does. */
+    /** Commit a new position the way a settings write from the browser does. */
     commit: async (enabled) => {
-      await settings.update(SETTINGS_NAMESPACE, { enabled });
+      stored = { enabled };
     },
+    /** What a settings form would read back. */
+    stored: () => stored.enabled,
+    listenerFor: (event) => listeners.find((entry) => entry.event === event),
   };
 }
 
@@ -111,41 +110,86 @@ const assembly = () => ({
 test('the row declares the plugin identity and injects nothing hard', () => {
   assert.equal(name, 'websearch-toggle');
   assert.deepEqual(inject, [], 'every service it uses is optional, so a composition missing one still boots');
-  assert.equal(SETTINGS_NAMESPACE, 'web-search-toggle');
+  assert.equal(SETTINGS_NAMESPACE, 'websearch-toggle', 'on 0.1.7 the namespace IS the Loader entry id');
 });
 
-test('the switch is a registered settings section with the shipped default ON', () => {
-  const booted = boot();
-  assert.equal(booted.installed.length, 1, 'the namespace must actually be installed');
-  const registration = booted.installed[0];
-  assert.equal(registration.ns, 'web-search-toggle');
-  assert.deepEqual(registration.entry, { enabled: true }, 'an absent section means ON, never OFF');
-  assert.equal(typeof registration.hooks.setSource, 'function');
-  assert.equal(typeof registration.hooks.onChange, 'function');
+test('the namespace is the Loader entry id declared in cordis.patch.yml', () => {
+  // 0.1.7 keys settings forms by `configEditor.entries()` -> `options.id`. A
+  // namespace this plugin INVENTS cannot be reached by its own browser half:
+  // `configForms.get(...)` would find nothing, the form would never leave
+  // `status: 'loading'`, and the switch would sit disabled — the reported bug.
+  const patch = readFileSync(join(root, 'cordis.patch.yml'), 'utf8');
+  const id = /-\s*id:\s*([A-Za-z0-9_-]+)/u.exec(patch)?.[1];
+  assert.equal(id, SETTINGS_NAMESPACE, 'the row id and the settings namespace must be one value');
+  assert.ok(source.includes(`const NS = '${SETTINGS_NAMESPACE}'`), 'the browser half must use the same namespace');
 });
 
-test('the schema is a REAL schemastery schema, because describe() serializes it', () => {
-  // The regression this guards: `settings.describe()` calls `schema.toJSON()` and
-  // hands the result to the browser, and that ONE call gates every official
-  // plugin page — each registers only for a namespace it sees in that list. A
-  // hand-rolled validator without toJSON threw inside describe(), which removed
-  // the Shell, Agent loop, Subagent AND Web search pages from the Plugins page.
-  assert.equal(typeof SettingsSchema.toJSON, 'function', 'describe() requires toJSON or it throws');
-  const wire = SettingsSchema.toJSON();
+test('the switch is a Config schema whose field is a live volatile accessor', () => {
+  // `.volatile()` does two things, and the plugin needs both:
+  //
+  //  * it is the ONLY reason `SettingsForms.describe()` keeps this entry at all —
+  //    `volatileForm()` drops fields without `meta.volatile` and returns
+  //    undefined when nothing is left, and describe() then skips the entry, so a
+  //    non-volatile schema yields NO namespace for the browser to reach;
+  //  * it makes the resolved field a LIVE accessor (`{ get() }`) rather than a
+  //    plain value, which is what `config.enabled.get()` reads per step.
+  const field = Config({}).enabled;
+  assert.equal(typeof field.get, 'function', '.volatile() must produce a live accessor');
+  assert.equal(field.get(), true, 'an absent field is the default, not an error');
+  assert.equal(Config({ enabled: false }).enabled.get(), false);
+  assert.equal(Config({ enabled: true }).enabled.get(), true);
+  assert.throws(() => Config({ enabled: 'off' }), 'a bad value must be a loud rejection');
+});
+
+test('the field is marked volatile in the wire schema', () => {
+  // The regression: a Config whose field lacks `meta.volatile` is invisible to
+  // the settings system, so `settings.describe()` never lists the namespace and
+  // the browser half has nothing to read or write. `enabled()` in lib/index.js
+  // accepts a plain boolean too, so nothing else would have caught it.
+  const wire = Config.toJSON();
+  const bool = Object.values(wire.refs).find((node) => node !== null && typeof node === 'object' && node.type === 'boolean');
+  assert.ok(bool !== undefined, 'the boolean field must be in the wire schema');
+  assert.equal(bool.meta?.volatile, true, 'without meta.volatile the namespace is never served');
+});
+
+test('the Config schema is a REAL schemastery schema, because describe() serializes it', () => {
+  // The regression this guards: `settings.describe()` serializes every served
+  // schema with `toJSON()` and hands the result to the browser. A hand-rolled
+  // validator without it threw inside describe(), which removed the Shell, Agent
+  // loop, Subagent AND Web search pages from the Plugins page.
+  assert.equal(typeof Config.toJSON, 'function', 'describe() requires toJSON or it throws');
+  const wire = Config.toJSON();
   assert.equal(typeof wire, 'object');
   assert.ok(wire !== null, 'toJSON must produce an object');
-  // The real shape is an interned { uid, refs } graph; the object schema is
-  // always a refs entry whose `dict` maps the field name to its ref id.
   const objectNode = Object.values(wire.refs).find((node) => node !== null && typeof node === 'object' && node.dict !== undefined);
   assert.ok(objectNode !== undefined, 'the wire form must describe an object with fields');
   assert.equal(typeof objectNode.dict.enabled, 'number', '`enabled` must be a declared field');
 });
 
-test('the schema resolves an absent section to the shipped default ON', () => {
-  assert.deepEqual(SettingsSchema({}), { enabled: true }, 'an absent field is the default, not an error');
-  assert.deepEqual(SettingsSchema({ enabled: false }), { enabled: false });
-  assert.deepEqual(SettingsSchema({ enabled: true }), { enabled: true });
-  assert.throws(() => SettingsSchema({ enabled: 'off' }), 'a bad value must be a loud rejection');
+test('the live config accessor is consulted per step, not cached at boot', async () => {
+  // `config.enabled.get()` must be read at each assembly and each guard: that is
+  // what makes a settings write take effect on the NEXT step rather than the next
+  // restart. A cached-at-boot value would pass every other test in this file.
+  const booted = boot({ enabled: true });
+  const entry = booted.listenerFor('system-prompt/assemble');
+
+  const before = await entry.listener(assembly(), {}, async () => assembly());
+  assert.deepEqual(before.tools.map((tool) => tool.name), ['read', 'web_search', 'web_fetch']);
+
+  await booted.commit(false);
+
+  const after = await entry.listener(assembly(), {}, async () => assembly());
+  assert.deepEqual(after.tools.map((tool) => tool.name), ['read', 'web_fetch'], 'the live value must be re-read');
+  assert.deepEqual(after.sections.map((section) => section.name), ['persona']);
+});
+
+test('a config accessor returning a plain boolean is accepted too', async () => {
+  // Belt and braces for a deployment that hands the config over already unwrapped.
+  const booted = boot({ enabled: false });
+  booted.config.enabled = false;
+  const entry = booted.listenerFor('system-prompt/assemble');
+  const projected = await entry.listener(assembly(), {}, async () => assembly());
+  assert.deepEqual(projected.tools.map((tool) => tool.name), ['read', 'web_fetch']);
 });
 
 test('a committed OFF is in force before the first assembly', async () => {
@@ -184,16 +228,18 @@ test('the tool guard is registered globally and follows the switch', async () =>
   assert.equal(booted.guards[0]({ name: 'web_fetch' }), undefined, 'web_fetch is a different capability and stays');
 });
 
-test('a deployment without a settings service still boots and keeps the switch ON', () => {
-  const booted = boot({ services: ['systemPrompt', 'tools'] });
-  assert.equal(booted.installed.length, 0);
-  assert.ok(booted.listenerFor('system-prompt/assemble') !== undefined, 'the rest of the plugin must still mount');
-  assert.equal(booted.guards.length, 1);
+test('a deployment with no config at all keeps the shipped ON', async () => {
+  // `apply(ctx)` with no config must not throw and must not silently disable the
+  // capability: an absent field is the schema default, which is ON.
+  const booted = boot({ enabled: true });
+  delete booted.config.enabled;
+  const entry = booted.listenerFor('system-prompt/assemble');
+  const projected = await entry.listener(assembly(), {}, async () => assembly());
+  assert.deepEqual(projected.tools.map((tool) => tool.name), ['read', 'web_search', 'web_fetch']);
 });
 
 test('a deployment without a tool registry still boots and keeps the assembly half', () => {
-  const booted = boot({ services: ['settings', 'systemPrompt'] });
-  assert.equal(booted.installed.length, 1);
+  const booted = boot({ services: ['systemPrompt'] });
   assert.equal(booted.guards.length, 0);
   assert.ok(booted.listenerFor('system-prompt/assemble') !== undefined);
 });

@@ -1,6 +1,6 @@
 {
   "name": "dsh-websearch-toggle",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "A live on/off switch for web_search in DeepSeek Harness, added to the official Web search card on the sidebar Plugins page without changing any official code.",
   "type": "module",
   "main": "lib/index.js",

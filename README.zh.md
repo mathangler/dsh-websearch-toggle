@@ -32,19 +32,43 @@
 
 ## 版本要求
 
-**需要 DSH 0.1.7 或更新。** 0.1.7 改了本插件用的那个客户端设置接缝：原来的
-`settingsScope.bind({ namespace })` 变成 `configForms.get(namespace)`，而且
-`settingsScope` 这个名字在 0.1.7 里**已经彻底不存在**。客户端半边声明的是
-`inject: ['locale', 'configForms']` —— 而一个指向不存在服务的 inject 会让插件的
-fiber **永远等下去**，于是 Web UI 把插件报成加载失败，这正是升级后发生的事。
+**需要 DSH 0.1.7 或更新。** 0.1.7 换掉了插件暴露设置的方式，本插件也随之改了。
+有三件事决定开关能不能用：
 
-`test/service-contract.mjs` 专门守这条：它读取**已安装**的包，只要 bundle 声明的
-任一服务没有被注册就失败。这次改名**仓库里其它东西一个都没发现** —— 宿主半边启动
-干净、bundle 也照常返回 HTTP 200 —— 所以每次升级 DSH 之后，最该跑的就是它：
+1. **插件的设置页就是它的 `Config` schema。** 插件导出 `Config = z.object({...})`，
+   设置系统自动把它投影成表单；`apply(ctx, config)` 拿到解析后的 config，而
+   `config.enabled.get()` 是**活取值** —— 浏览器写一次，下一个模型步就读得到，不需要
+   订阅。旧的 `settings.installSection(...)` / `settings.get(...)` 在 0.1.7 里都不存在。
+2. **设置命名空间就是 Loader 条目 id。** 本插件的行是 `cordis.patch.yml` 里的
+   `id: websearch-toggle`，所以命名空间就是 `websearch-toggle`，浏览器半边用
+   `configForms.get('websearch-toggle')` 取它。**插件自己编的命名空间，它自己的
+   浏览器半边是取不到的。**
+3. **字段必须标 `.volatile()`。** `SettingsForms.describe()` 会把每个命名空间过一遍
+   `volatileForm(schema)`，而它只保留带 `meta.volatile` 的字段、一个都没有时返回
+   `undefined` —— 接着 `describe()` 就**整条跳过这个条目**。所以没标 volatile 的
+   schema 根本不会产生命名空间，浏览器读到空，开关就一直禁用。`.volatile()` 同时
+   表示这个字段是运行时可被用户改的，而不是由组合固定死的。
+
+0.1.7 里选择结果会落到 profile 的 `cordis.patch.yml`，作为该条目的 config 覆盖
+（`settings.yaml` 已经不是活动文档了）：
+
+```yaml
+- id: websearch-toggle
+  name: dsh-websearch-toggle
+  config:
+    enabled: false
+```
+
+有三道检查专门守这些，因为**两次改名仓库里其它测试一个都没发现** —— 宿主启动干净、
+bundle 照样返回 HTTP 200，而开关是死的：
 
 ```bash
-node test/service-contract.mjs
+node test/service-contract.mjs   # 声明的服务确实都被注册
+node test/wiring.test.mjs        # 命名空间、volatile 字段、两个效果
+node test/style-parity.mjs       # 开关样式与自带的那个一致
 ```
+
+**每次升级 DSH 之后，请跑 service-contract 和 wiring。**
 
 ## 安装
 

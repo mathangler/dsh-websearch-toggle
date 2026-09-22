@@ -53,7 +53,9 @@ const assembly = () => ({
 });
 
 test('the namespace and the governed names are the platform spellings', () => {
-  assert.equal(NAMESPACE, 'web-search-toggle');
+  // On 0.1.7 a settings namespace IS the Loader entry id, so this is the row id
+  // from cordis.patch.yml — not a name this plugin invents.
+  assert.equal(NAMESPACE, 'websearch-toggle');
   assert.equal(WEB_SEARCH_TOOL, 'web_search');
   assert.equal(WEB_SEARCH_SECTION, 'tool:web_search');
 });

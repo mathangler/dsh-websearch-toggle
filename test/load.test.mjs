@@ -312,7 +312,7 @@ test('the bundle id is the package name and it injects only services 0.1.7 provi
 test('the form is obtained through configForms.get(namespace)', async () => {
   const loaded = loadClient();
   await loaded.settle();
-  assert.deepEqual(loaded.boundNamespaces, ['web-search-toggle'], 'the form must be keyed by the settings namespace');
+  assert.deepEqual(loaded.boundNamespaces, ['websearch-toggle'], 'the form is keyed by the Loader entry id');
   const card = loaded.makeCard('web-search');
   loaded.fire([card]);
   assert.equal(endOf(card).dshwstSwitch.disabled, false, 'a form snapshot must reach the switch');
@@ -391,7 +391,7 @@ test('the wrapper mirrors the shipped cardEnd box', () => {
 test('both locale dictionaries register and cover the same keys', () => {
   const loaded = loadClient();
   assert.deepEqual(loaded.localeRegisters.map((entry) => entry.id).sort(), ['en', 'zh']);
-  assert.equal(loaded.localeRegisters[0].ns, 'web-search-toggle');
+  assert.equal(loaded.localeRegisters[0].ns, 'websearch-toggle');
   const en = loaded.localeRegisters.find((entry) => entry.id === 'en').dict;
   const zh = loaded.localeRegisters.find((entry) => entry.id === 'zh').dict;
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
