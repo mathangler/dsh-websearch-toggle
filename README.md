@@ -64,6 +64,17 @@ plugin moved with it. Three facts decide whether the switch works at all:
    also marks the field user-settable at runtime rather than fixed by the
    composition.
 
+`.volatile()` arrived in `@deepseek-ai/schemastery` **3.18.3**, and npm's `latest`
+tag for that package is **3.18.2** — which does not have it. So the dependency
+floor is load-bearing, not decoration: `^3.18.2` cannot reach 3.18.3, pnpm then
+installs a copy where `.volatile` is not a function, and the Host Loader reports
+the row as `failed to import`. It is pinned at `^3.18.3` for that reason.
+
+A `link:` dev install does **not** catch this: it resolves the *platform's*
+bundled schemastery (3.18.3) rather than the declared dependency, so every
+dev-side check passes while a real install fails. That is exactly how this
+shipped once.
+
 On 0.1.7 the choice lands in the profile's `cordis.patch.yml` as a config
 override for the entry (`settings.yaml` is no longer the live document):
 
@@ -78,6 +89,7 @@ Three checks guard these, because no other test noticed either rename — the ho
 booted clean and the bundle still served HTTP 200 while the switch was dead:
 
 ```bash
+node test/dependency-floor.mjs   # the schemastery floor really has .volatile()
 node test/service-contract.mjs   # every injected service really is registered
 node test/wiring.test.mjs        # the namespace, the volatile field, the effects
 node test/style-parity.mjs       # the switch styles match the shipped primitive

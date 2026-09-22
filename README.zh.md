@@ -63,6 +63,7 @@
 bundle 照样返回 HTTP 200，而开关是死的：
 
 ```bash
+node test/dependency-floor.mjs   # schemastery 的下限版本确实有 .volatile()
 node test/service-contract.mjs   # 声明的服务确实都被注册
 node test/wiring.test.mjs        # 命名空间、volatile 字段、两个效果
 node test/style-parity.mjs       # 开关样式与自带的那个一致
