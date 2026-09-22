@@ -132,6 +132,7 @@ function loadClient(options = {}) {
   const effects = [];
   const localeRegisters = [];
   const writes = [];
+  const boundNamespaces = [];
   const observers = [];
   let callback = null;
 
@@ -172,8 +173,9 @@ function loadClient(options = {}) {
   const notify = [];
 
   /**
-   * The bound settings scope, modelled on the real one: it owns the revision,
-   * writes through `set(field, value)`, and re-reads after its own write.
+   * The per-namespace settings form, modelled on 0.1.7's ConfigFormController:
+   * it owns the revision, writes through `set(field, value)`, and re-reads after
+   * its own write.
    */
   const scope = {
     getSnapshot() {
@@ -205,8 +207,12 @@ function loadClient(options = {}) {
     },
   };
 
-  const settingsScope = {
-    bind: () => scope,
+  /** 0.1.7's service. `get(namespace)` returns the shared form for it. */
+  const configForms = {
+    get: (namespace) => {
+      boundNamespaces.push(namespace);
+      return scope;
+    },
     describe: () => ({ getSnapshot: () => ({ view: { namespaces: [] } }), subscribe: () => () => {} }),
   };
 
@@ -218,7 +224,7 @@ function loadClient(options = {}) {
       effects.push({ label, dispose });
       return dispose;
     },
-    get: (service) => (service === 'settingsScope' ? settingsScope : undefined),
+    get: (service) => (service === 'configForms' ? configForms : undefined),
     remote: { settings: { update: () => Promise.reject(new Error('this bundle must not call the Remote directly')) } },
     locale: {
       getSnapshot: () => ({ active: options.locale === undefined ? 'zh' : options.locale, locales: [{ id: 'en' }, { id: 'zh' }] }),
@@ -271,6 +277,7 @@ function loadClient(options = {}) {
     effects,
     localeRegisters,
     writes,
+    boundNamespaces,
     observers,
     makeCard,
     /** Drive the captured MutationObserver callback by hand. */
@@ -290,10 +297,25 @@ function loadClient(options = {}) {
 /** The injected block on a card, or null. */
 const endOf = (card) => walk(card).find((node) => node.hasAttribute('data-dshwst-end')) ?? null;
 
-test('the bundle id is the package name and it asks for the locale and settings scope', () => {
+test('the bundle id is the package name and it injects only services 0.1.7 provides', () => {
   const match = /__ModuleLoader__.load\(\{\s*id:\s*'([^']+)'/u.exec(source);
   assert.equal(match[1], pkg.name, 'a mismatched id is a silently unloaded bundle');
-  assert.deepEqual(loadClient().mod.inject, ['locale', 'settingsScope']);
+  // Regression: 0.1.7 REMOVED `settingsScope` and replaced it with
+  // `configForms`. Injecting a service that no longer exists leaves the plugin's
+  // fiber waiting forever, and the page reports the plugin as broken — which is
+  // exactly what happened. test/service-contract.mjs checks these names against
+  // the installed packages; this asserts the literal value that broke.
+  assert.deepEqual(loadClient().mod.inject, ['locale', 'configForms']);
+  assert.ok(!loadClient().mod.inject.includes('settingsScope'), 'settingsScope does not exist in 0.1.7');
+});
+
+test('the form is obtained through configForms.get(namespace)', async () => {
+  const loaded = loadClient();
+  await loaded.settle();
+  assert.deepEqual(loaded.boundNamespaces, ['web-search-toggle'], 'the form must be keyed by the settings namespace');
+  const card = loaded.makeCard('web-search');
+  loaded.fire([card]);
+  assert.equal(endOf(card).dshwstSwitch.disabled, false, 'a form snapshot must reach the switch');
 });
 
 test('it registers NO slot, so it can never displace an official entry', () => {

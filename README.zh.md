@@ -30,6 +30,22 @@
   `cordis.patch.yml`、改 agent 预设的区别。
 - 你已经保存的接口地址、密钥、次数上限都保留，只是关闭期间不生效。
 
+## 版本要求
+
+**需要 DSH 0.1.7 或更新。** 0.1.7 改了本插件用的那个客户端设置接缝：原来的
+`settingsScope.bind({ namespace })` 变成 `configForms.get(namespace)`，而且
+`settingsScope` 这个名字在 0.1.7 里**已经彻底不存在**。客户端半边声明的是
+`inject: ['locale', 'configForms']` —— 而一个指向不存在服务的 inject 会让插件的
+fiber **永远等下去**，于是 Web UI 把插件报成加载失败，这正是升级后发生的事。
+
+`test/service-contract.mjs` 专门守这条：它读取**已安装**的包，只要 bundle 声明的
+任一服务没有被注册就失败。这次改名**仓库里其它东西一个都没发现** —— 宿主半边启动
+干净、bundle 也照常返回 HTTP 200 —— 所以每次升级 DSH 之后，最该跑的就是它：
+
+```bash
+node test/service-contract.mjs
+```
+
 ## 安装
 
 ```bash

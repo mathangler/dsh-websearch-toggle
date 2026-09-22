@@ -39,6 +39,24 @@ switch to that card after render, and removes it when the plugin unloads.
 - The endpoint, key and max-uses values you stored are kept, not cleared. They
   are simply ignored while the switch is off.
 
+## Requirements
+
+**DSH 0.1.7 or newer.** 0.1.7 renamed the client-side settings seam this plugin
+uses: `settingsScope.bind({ namespace })` became `configForms.get(namespace)`,
+and `settingsScope` no longer exists anywhere in 0.1.7. The client half declares
+`inject: ['locale', 'configForms']`, and an inject naming a service that does not
+exist leaves the plugin's fiber waiting forever — the Web UI then reports the
+plugin as broken, which is exactly what happened on the upgrade.
+
+`test/service-contract.mjs` guards this: it reads the installed packages and
+fails when any service the bundle injects is not registered. Nothing else in this
+repository caught the rename — the host half booted clean and the bundle still
+served HTTP 200 — so that check is the one to run after every DSH upgrade:
+
+```bash
+node test/service-contract.mjs
+```
+
 ## Install
 
 ```bash
